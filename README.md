@@ -12,6 +12,10 @@ After signing in and uploading a PDF, open one of its three options:
 
 Text-based PDFs are supported through `pdf-parse`. A scanned/image-only PDF may require OCR; the site explains when no selectable text is found.
 
+## Folder layout
+
+Keep `index.html`, `app.js` and `styles.css` inside the `public/` folder next to `server.js` (push the whole folder to GitHub). If they are uploaded in the project root instead, the server still serves exactly those three files.
+
 ## Run locally
 
 1. Install Node.js 18 or newer.

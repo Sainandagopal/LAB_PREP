@@ -63,12 +63,24 @@ app.use(session({
   cookie: { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 }
 }));
 
-// Only public/ is ever served. (The old fallback to the project root would have exposed server.js, .env and storage/.)
-const frontendFolder = path.join(__dirname, 'public');
-if (!fs.existsSync(path.join(frontendFolder, 'index.html'))) {
-  console.error(`Missing ${path.join(frontendFolder, 'index.html')} — the public/ folder was not deployed.`);
+// The frontend normally lives in public/. If the repo was uploaded "flat" (index.html, app.js and styles.css next to
+// server.js), those three files are served individually. The project root itself is never served as a folder, so
+// server.js, .env and storage/ cannot be downloaded.
+const publicDir = path.join(__dirname, 'public');
+const FRONTEND_FILES = ['index.html', 'app.js', 'styles.css'];
+const hasPublic = fs.existsSync(path.join(publicDir, 'index.html'));
+const hasFlat = fs.existsSync(path.join(__dirname, 'index.html'));
+const frontendFolder = !hasPublic && hasFlat ? __dirname : publicDir;
+if (hasPublic) {
+  app.use(express.static(publicDir));
+} else if (hasFlat) {
+  console.warn('public/ not found; serving index.html, app.js and styles.css from the project root.');
+  FRONTEND_FILES.forEach((f) => {
+    if (fs.existsSync(path.join(__dirname, f))) app.get('/' + f, (req, res) => res.sendFile(path.join(__dirname, f)));
+  });
+} else {
+  console.error('Frontend files not found: put index.html, app.js and styles.css in a public/ folder next to server.js.');
 }
-app.use(express.static(frontendFolder));
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(frontendFolder, 'index.html'), (err) => {
