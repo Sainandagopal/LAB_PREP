@@ -1,17 +1,22 @@
+
 {
   "name": "labprep-ai",
   "version": "1.0.0",
-  "description": "A multi-user lab internal study portal with PDF management, revision tools and quizzes.",
+  "private": true,
   "main": "server.js",
-  "scripts": { "start": "node server.js", "dev": "node --watch server.js" },
-  "engines": { "node": "22.x" },
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
   "dependencies": {
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^11.8.1",
+    "better-sqlite3": "^11.10.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-session": "^1.18.1",
-    "multer": "^1.4.5-lts.1",
-    "pdf-parse": "1.1.1"
+    "multer": "^1.4.5-lts.2",
+    "pdf-parse": "^1.1.1"
   }
 }
