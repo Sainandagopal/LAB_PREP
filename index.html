@@ -166,11 +166,28 @@
         "A request failed. Please check your server connection and try again.";
     }
   });
+<script>
+  window.addEventListener("error", function (event) {
+    console.error("LabPrep JavaScript error:", event.message);
+
+    const errorBox = document.getElementById("authError");
+    if (errorBox) {
+      errorBox.textContent =
+        "The app encountered an error. Refresh the page and check the app logs.";
+    }
+  });
+
+  window.addEventListener("unhandledrejection", function (event) {
+    console.error("LabPrep request error:", event.reason);
+
+    const errorBox = document.getElementById("authError");
+    if (errorBox) {
+      errorBox.textContent =
+        "A request failed. Please check your server connection and try again.";
+    }
+  });
 </script>
 
 <script src="/app.js" defer></script>
 </body>
 </html>
-
-
-  
