@@ -1,6 +1,5 @@
-from pathlib import Path
 
-content = r'''const $ = (s, root=document) => root.querySelector(s);
+const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
 const state = { user:null, subjects:[], documents:[], progress:[], quizResults:[], counts:{}, view:"overview", subjectKey:null, subjectTab:"materials", activeDoc:null, authMode:"login", quiz:null };
 const colors = [
@@ -69,7 +68,4 @@ $("#startQuizBtn").addEventListener("click",startQuiz);$("#menuBtn").addEventLis
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){closeUpload();closeReader();$("#sidebar").classList.remove("open");}});
 async function boot(){try{const d=await api("/api/me");state.subjects=d.subjects;if(d.user){showApp(d.user);await refresh();}else showAuth();}catch(e){showAuth();toast("Could not connect to the server. Check that it is running.",true);}}
 boot();
-'''
-path = Path("/mnt/data/app.js")
-path.write_text(content, encoding="utf-8")
-print(f"Created {path} ({path.stat().st_size:,} bytes). Note: this file reproduces the app.js code you pasted; it does not independently reconcile API fields with server.js.")
+
