@@ -121,6 +121,56 @@
     <div class="reader-card"><div class="reader-toolbar"><div><b id="readerTitle">PDF reader</b><span id="readerSubtitle" class="muted">Study material</span></div><div class="reader-actions"><button class="btn btn-soft" data-tool="summary">Summary</button><button class="btn btn-soft" data-tool="viva">Viva Q&amp;A</button><button class="btn btn-soft" data-tool="important">Important questions</button><button class="icon-button close-reader" aria-label="Close reader">×</button></div></div><div class="reader-body"><iframe id="pdfFrame" title="PDF document reader"></iframe><aside class="study-output"><div class="output-heading"><span class="eyebrow blue-eyebrow">REVISION ASSISTANT</span><h3 id="outputTitle">Make this PDF easier to revise</h3><p class="muted">Choose a tool above to generate study material from the PDF text.</p></div><div id="outputContent" class="output-content"><div class="output-empty">✦<span>Your revision notes will appear here.</span></div></div><div id="outputSource" class="output-source"></div></aside></div></div>
   </div>
 
-  <script src="/app.js" defer></script>
+<script>
+  window.addEventListener("error", function (event) {
+    console.error("LabPrep JavaScript error:", event.message);
+
+    window.addEventListener("DOMContentLoaded", function () {
+      const errorBox = document.getElementById("authError");
+      if (errorBox) {
+        errorBox.textContent =
+          "The app encountered an error. Refresh the page and check the app logs.";
+      }
+    }, { once: true });
+  });
+
+  window.addEventListener("unhandledrejection", function (event) {
+    console.error("LabPrep request error:", event.reason);
+
+    const errorBox = document.getElementById("authError");
+    if (errorBox) {
+      errorBox.textContent =
+        "A request failed. Please check your server connection and try again.";
+    }
+  });
+
+<script>
+  window.addEventListener("error", function (event) {
+    console.error("LabPrep JavaScript error:", event.message);
+
+    window.addEventListener("DOMContentLoaded", function () {
+      const errorBox = document.getElementById("authError");
+      if (errorBox) {
+        errorBox.textContent =
+          "The app encountered an error. Refresh the page and check the app logs.";
+      }
+    }, { once: true });
+  });
+
+  window.addEventListener("unhandledrejection", function (event) {
+    console.error("LabPrep request error:", event.reason);
+
+    const errorBox = document.getElementById("authError");
+    if (errorBox) {
+      errorBox.textContent =
+        "A request failed. Please check your server connection and try again.";
+    }
+  });
+</script>
+
+<script src="/app.js" defer></script>
 </body>
 </html>
+
+
+  
