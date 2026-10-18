@@ -9,17 +9,47 @@ const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const STORE = path.join(__dirname, 'storage');
+// STORAGE_DIR lets you point at a Render Persistent Disk (e.g. /var/data) so accounts and PDFs survive restarts.
+const STORE = process.env.STORAGE_DIR ? path.resolve(process.env.STORAGE_DIR) : path.join(__dirname, 'storage');
 const UPLOADS = path.join(STORE, 'uploads');
 const DB_FILE = path.join(STORE, 'db.json');
 fs.mkdirSync(UPLOADS, { recursive: true });
 const SUBJECTS = ['Physics', 'Chemistry', 'Data Structures', 'Java', 'DBMS'];
 
+// Never let one bad request or promise take the whole server down.
+process.on('unhandledRejection', (reason) => console.error('Unhandled rejection:', reason));
+process.on('uncaughtException', (err) => console.error('Uncaught exception:', err));
+
+function emptyDB() { return { users: [], documents: [], progress: {} }; }
 function loadDB() {
-  try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); }
-  catch { return { users: [], documents: [], progress: {} }; }
+  let raw;
+  try { raw = fs.readFileSync(DB_FILE, 'utf8'); }
+  catch (err) {
+    if (err.code === 'ENOENT') return emptyDB();
+    throw err;
+  }
+  try {
+    const db = JSON.parse(raw);
+    return { users: db.users || [], documents: db.documents || [], progress: db.progress || {} };
+  } catch {
+    // A corrupted file must never be silently replaced by an empty database (that would erase every account).
+    try { fs.copyFileSync(DB_FILE, `${DB_FILE}.corrupt-${Date.now()}`); } catch {}
+    console.error('db.json was unreadable; a backup copy was saved and a fresh database started.');
+    return emptyDB();
+  }
 }
-function saveDB(db) { fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2)); }
+// Write to a temp file then rename, so a crash mid-write cannot leave a half-written db.json.
+function saveDB(db) {
+  const tmp = `${DB_FILE}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
+  fs.renameSync(tmp, DB_FILE);
+}
+// Express 4 does not catch errors thrown inside async handlers; this forwards them to the error handler.
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+// Render (and most hosts) terminate HTTPS at a proxy. Without this, express-session refuses to set the
+// "secure" cookie in production, so nobody could ever stay signed in.
+app.set('trust proxy', 1);
 
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -29,25 +59,33 @@ app.use(session({
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
+  proxy: true,
   cookie: { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 }
 }));
-const publicFolder = path.join(__dirname, 'public');
-const frontendFolder = fs.existsSync(path.join(publicFolder, 'index.html'))
-  ? publicFolder
-  : __dirname;
 
-// Serve frontend assets from public/ when present, otherwise from project root.
+// Only public/ is ever served. (The old fallback to the project root would have exposed server.js, .env and storage/.)
+const frontendFolder = path.join(__dirname, 'public');
+if (!fs.existsSync(path.join(frontendFolder, 'index.html'))) {
+  console.error(`Missing ${path.join(frontendFolder, 'index.html')} — the public/ folder was not deployed.`);
+}
 app.use(express.static(frontendFolder));
 
-// Explicit homepage route prevents 'Cannot GET /' when static index lookup fails.
 app.get('/', (req, res) => {
   res.sendFile(path.join(frontendFolder, 'index.html'), (err) => {
     if (err && !res.headersSent) {
       console.error('Unable to serve index.html:', err);
-      res.status(500).send('Unable to load the homepage. Check that index.html exists in the project root or public folder.');
+      res.status(500).send('Unable to load the homepage. Check that public/index.html exists.');
     }
   });
 });
+
+// multer 1.x reads file names as latin1, which garbles names like "Lab – Réport.pdf". Repair them back to UTF-8.
+function fixFileName(name = '') {
+  const s = String(name);
+  if ([...s].some(ch => ch.charCodeAt(0) > 255)) return s;
+  const repaired = Buffer.from(s, 'latin1').toString('utf8');
+  return repaired.includes('�') ? s : repaired;
+}
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -56,17 +94,27 @@ const upload = multer({
       fs.mkdirSync(dir, { recursive: true });
       cb(null, dir);
     },
-    filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`)
+    filename: (req, file, cb) => {
+      file.originalname = fixFileName(file.originalname);
+      cb(null, `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`);
+    }
   }),
   limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const isPdf = file.mimetype === 'application/pdf' || file.originalname.toLowerCase().endsWith('.pdf');
-    cb(isPdf ? null : new Error('Please upload a PDF file.'), isPdf);
+    if (isPdf) return cb(null, true);
+    const err = new Error('Please upload a PDF file.');
+    err.status = 400;
+    cb(err, false);
   }
 });
 
 function auth(req, res, next) {
   if (!req.session.userId) return res.status(401).json({ error: 'Please sign in first.' });
+  // The account may no longer exist (e.g. data was reset on a free host); treat that as signed out.
+  if (!loadDB().users.some(u => u.id === req.session.userId)) {
+    return req.session.destroy(() => res.status(401).json({ error: 'Your session expired. Please sign in again.' }));
+  }
   next();
 }
 function getUserDocument(req, id) {
@@ -79,7 +127,10 @@ function documentPath(req, doc) {
 // Keeps all extracted newlines so code snippets remain copyable.
 async function extractDocumentText(req, doc) {
   const file = documentPath(req, doc);
-  const parsed = await pdfParse(fs.readFileSync(file));
+  if (!fs.existsSync(file)) throw new Error('The saved PDF file is missing from the server (it may have been cleared on restart). Please delete this entry and upload the PDF again.');
+  let parsed;
+  try { parsed = await pdfParse(fs.readFileSync(file)); }
+  catch (err) { throw new Error('Could not read this PDF. It may be scanned, password-protected or damaged.'); }
   return String(parsed.text || '').replace(/\r/g, '').replace(/[\t\u00a0]+/g, ' ').replace(/[ ]+\n/g, '\n').trim();
 }
 
@@ -273,7 +324,7 @@ app.get('/api/me', (req, res) => {
   const db = loadDB(), u = db.users.find(x => x.id === req.session.userId);
   res.json({ user: u ? { id: u.id, name: u.name, email: u.email } : null, subjects: SUBJECTS });
 });
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', wrap(async (req, res) => {
   const name = String(req.body.name || '').trim();
   const email = String(req.body.email || '').trim().toLowerCase();
   const password = String(req.body.password || '');
@@ -283,15 +334,15 @@ app.post('/api/register', async (req, res) => {
   const user = { id: crypto.randomUUID(), name, email, password: await bcrypt.hash(password, 10) };
   db.users.push(user); saveDB(db); req.session.userId = user.id;
   res.json({ user: { id: user.id, name, email } });
-});
-app.post('/api/login', async (req, res) => {
+}));
+app.post('/api/login', wrap(async (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase(), password = String(req.body.password || '');
   const db = loadDB(), user = db.users.find(u => u.email === email);
-  if (!user || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: 'Email or password is incorrect.' });
+  if (!user || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: 'Email or password is incorrect. (If this site was idle or redeployed on a free host, saved accounts may have been reset — create the account again.)' });
   req.session.userId = user.id;
   res.json({ user: { id: user.id, name: user.name, email: user.email } });
-});
-app.post('/api/logout', (req, res) => req.session.destroy(() => res.json({ ok: true })));
+}));
+app.post('/api/logout', (req, res) => req.session.destroy(() => { res.clearCookie('connect.sid'); res.json({ ok: true }); }));
 
 app.get('/api/documents', auth, (req, res) => {
   const db = loadDB();
@@ -308,7 +359,11 @@ app.post('/api/documents', auth, upload.single('pdf'), (req, res) => {
 app.get('/api/documents/:id/file', auth, (req, res) => {
   const doc = getUserDocument(req, req.params.id);
   if (!doc) return res.status(404).json({ error: 'PDF not found.' });
-  res.sendFile(documentPath(req, doc));
+  const file = documentPath(req, doc);
+  if (!fs.existsSync(file)) return res.status(404).json({ error: 'The saved PDF file is missing from the server. Please upload it again.' });
+  res.type('application/pdf');
+  res.setHeader('Content-Disposition', 'inline');
+  res.sendFile(file, { dotfiles: 'allow' });
 });
 app.delete('/api/documents/:id', auth, (req, res) => {
   const db = loadDB(), i = db.documents.findIndex(d => d.id === req.params.id && d.userId === req.session.userId);
@@ -341,7 +396,8 @@ app.post('/api/progress', auth, (req, res) => {
   if (!key) return res.status(400).json({ error: 'Missing experiment name.' });
   current[key] = !!req.body.done; db.progress[req.session.userId] = current; saveDB(db); res.json(current);
 });
-app.post('/api/generate', auth, (req, res) => {
+// Open to guests too: it is a static practice generator and stores nothing.
+app.post('/api/generate', (req, res) => {
   const topic = String(req.body.topic || 'the uploaded subject').trim().slice(0, 100);
   res.json({
     note: 'Demo question generator: connect an AI API for model-generated answers.',
@@ -359,9 +415,18 @@ app.post('/api/generate', auth, (req, res) => {
   });
 });
 app.get('/api/health', (req, res) => res.json({ ok: true, service: 'LabPrep AI' }));
+// Unknown /api routes return JSON instead of an HTML 404 page (the frontend expects JSON).
+app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
 app.use((err, req, res, next) => {
   console.error(err);
-  const status = err instanceof multer.MulterError ? (err.code === 'LIMIT_FILE_SIZE' ? 413 : 400) : 400;
-  res.status(status).json({ error: err.message || 'Request failed.' });
+  if (res.headersSent) return next(err);
+  let status = err.status || err.statusCode || 500;
+  let message = err.message || 'Request failed.';
+  if (err instanceof multer.MulterError) {
+    status = err.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+    if (err.code === 'LIMIT_FILE_SIZE') message = 'PDF must be smaller than 20 MB.';
+  }
+  if (status >= 500) message = 'Something went wrong on the server. Please try again.';
+  res.status(status).json({ error: message });
 });
 app.listen(PORT, '0.0.0.0', () => console.log(`LabPrep AI listening on ${PORT}`));

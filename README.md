@@ -37,6 +37,11 @@ Keep the key only in server environment variables; never put it in `public/app.j
 3. Build command: `npm install`; Start command: `npm start`.
 4. Add `SESSION_SECRET` and (optionally) `AI_API_KEY`, `AI_BASE_URL`, and `AI_MODEL` under Environment, then deploy.
 
-## Storage note
+## Storage note (important on Render)
+
+Set the optional `STORAGE_DIR` environment variable to a persistent-disk path (for example `/var/data`) to keep data there instead of `./storage`.
+On Render's **free** plan the filesystem is wiped whenever the service restarts, redeploys or spins down after being idle, so accounts, PDFs and progress will disappear. That is a hosting limit, not a bug; use a paid plan with a Persistent Disk, or move the data to an external database, if it must last.
+
+Original note:
 
 This starter stores uploads and user data under `storage/`. Render's default filesystem may be ephemeral: PDFs and user data can disappear after a restart or redeploy. Use a persistent disk or external database/object storage for data that must survive restarts. Review session settings and authentication before production use.

@@ -3,6 +3,7 @@ services:
     name: labprep-ai
     runtime: node
     plan: free
+    healthCheckPath: /api/health
     buildCommand: npm install
     startCommand: npm start
     envVars:
@@ -10,5 +11,7 @@ services:
         value: production
       - key: SESSION_SECRET
         generateValue: true
-    # For durable uploaded PDFs, attach a Render Persistent Disk
-    # at /opt/render/project/src/storage (paid Render plans).
+    # Free plan: the filesystem is wiped on every restart/redeploy/idle spin-down, so accounts and PDFs are lost.
+    # For durable data (paid plans), attach a Persistent Disk mounted at /var/data and add:
+    #   - key: STORAGE_DIR
+    #     value: /var/data

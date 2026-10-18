@@ -50,14 +50,20 @@ function renderDocs(){
 }
 async function refresh(){
   const m=await api('/api/me');user=m.user;
+  if(user){
+    try{documents=await api('/api/documents');progress=await api('/api/progress')}
+    catch(err){user=null;toast(err.message)} // e.g. session expired: fall back to guest mode instead of a misleading "cannot connect" error
+  }
+  if(!user){documents=[];progress={};Object.keys(studyCache).forEach(k=>delete studyCache[k]);}
   $('#userLabel').textContent=user?`Hi, ${user.name}`:'Guest mode';$('#authButton').textContent=user?'Sign out':'Sign in';
-  if(user){documents=await api('/api/documents');progress=await api('/api/progress')}else{documents=[];progress={};Object.keys(studyCache).forEach(k=>delete studyCache[k]);}
   renderSubjects();renderProgress();renderDocs();
-  $('#uploadForm').querySelector('button').disabled=!user;$('#generateForm').querySelector('button').disabled=!user;$('#mcqButton').disabled=!user;
+  $('#uploadForm').querySelector('button').disabled=!user;
+  $('#uploadForm').querySelector('button').title=user?'':'Sign in to upload PDFs';
 }
 function openAuth(mode='login'){
   authMode=mode;$('#modal').classList.remove('hidden');$('#authError').textContent='';
   $('#nameWrap').classList.toggle('hidden',mode!=='register');$('#nameInput').required=mode==='register';
+  $('#passwordInput').autocomplete=mode==='register'?'new-password':'current-password';
   $('#modalTitle').textContent=mode==='register'?'Create your account':'Welcome back';
   $('#loginTab').classList.toggle('active',mode==='login');$('#registerTab').classList.toggle('active',mode==='register');
 }
@@ -84,7 +90,7 @@ async function openStudy(id,mode){
   if(!studyCache[String(id)]){
     slot.innerHTML='<div class="study-panel"><p class="muted">Reading the PDF and preparing study materials. Longer documents may take a little time…</p><div class="loading-line"></div></div>';
     try{studyCache[String(id)]=await api(`/api/documents/${encodeURIComponent(id)}/study`,{method:'POST',body:{}});}
-    catch(err){slot.innerHTML=`<div class="study-panel"><p class="error">${esc(err.message)}</p><button class="smallbtn outline" data-retry-study="${esc(id)}" data-study="${esc(mode)}">Try again</button></div>`;return;}
+    catch(err){slot.innerHTML=`<div class="study-panel"><p class="error">${esc(err.message)}</p><button class="smallbtn outline" data-retry-study="${esc(id)}" data-id="${esc(id)}" data-study-mode="${esc(mode)}">Try again</button></div>`;return;}
   }
   renderStudy(id,mode);
   slot.scrollIntoView({behavior:'smooth',block:'nearest'});
@@ -119,14 +125,16 @@ $('#uploadForm').onsubmit=async e=>{
   catch(err){toast(err.message)}finally{button.disabled=!user;button.textContent='Upload PDF';}
 };
 $('#docList').onclick=async e=>{
-  const study=e.target.closest('[data-study]'), retry=e.target.closest('[data-retry-study]'), view=e.target.closest('[data-view]'), del=e.target.closest('[data-delete]'), copyText=e.target.closest('[data-copy-text]'), copyCode=e.target.closest('[data-copy-code]'), close=e.target.closest('[data-close-study]');
+  const retry=e.target.closest('[data-retry-study]'), study=retry?null:e.target.closest('[data-study]'), view=e.target.closest('[data-view]'), del=e.target.closest('[data-delete]'), copyText=e.target.closest('[data-copy-text]'), copyCode=e.target.closest('[data-copy-code]'), close=e.target.closest('[data-close-study]');
   try{
     if(study){await openStudy(study.dataset.id,study.dataset.study);return;}
-    if(retry){await openStudy(retry.dataset.id,retry.dataset.study);return;}
+    if(retry){await openStudy(retry.dataset.retryStudy,retry.dataset.studyMode||'viva');return;}
     if(close){const slot=$(`#result-${CSS.escape(String(close.dataset.closeStudy))}`);if(slot)slot.innerHTML='';return;}
     if(copyText){const d=studyCache[String(copyText.dataset.copyText)];if(d)await copyToClipboard(d.text||'');return;}
     if(copyCode){const d=studyCache[String(copyCode.dataset.copyCode)];const block=d?.codeBlocks?.[Number(copyCode.dataset.codeIndex)];if(block)await copyToClipboard(block.code);return;}
-    if(view){const response=await fetch(`/api/documents/${encodeURIComponent(view.dataset.view)}/file`,{credentials:'same-origin'});if(!response.ok)throw new Error('Could not open PDF. Please sign in again and retry.');const blob=await response.blob(),url=URL.createObjectURL(blob),w=window.open(url,'_blank');if(!w)toast('Allow pop-ups to preview PDFs.');setTimeout(()=>URL.revokeObjectURL(url),60000);return;}
+    // Open the file URL directly and synchronously: the session cookie is sent automatically, and browsers
+    // do not treat it as a blocked pop-up (the old fetch-then-window.open approach was blocked on most browsers).
+    if(view){const w=window.open(`/api/documents/${encodeURIComponent(view.dataset.view)}/file`,'_blank');if(!w)toast('Allow pop-ups to preview PDFs.');return;}
     if(del){if(!confirm('Delete this PDF and its saved file?'))return;await api('/api/documents/'+encodeURIComponent(del.dataset.delete),{method:'DELETE'});delete studyCache[String(del.dataset.delete)];await refresh();toast('PDF deleted.');return;}
   }catch(err){toast(err.message)}
 };
@@ -135,12 +143,11 @@ $('#experiments').onchange=async e=>{
   try{progress=await api('/api/progress',{method:'POST',body:{key:c.dataset.exp,done:c.checked}});renderProgress()}catch(err){toast(err.message)}
 };
 $('#generateForm').onsubmit=async e=>{
-  e.preventDefault();if(!user)return openAuth();
+  e.preventDefault();
   try{const d=await api('/api/generate',{method:'POST',body:{topic:$('#topicInput').value}});$('#vivaResults').innerHTML=`<p class="muted">${esc(d.note)}</p>`+d.viva.map(x=>`<div class="qa"><b>${esc(x.q)}</b><p>${esc(x.a)}</p></div>`).join('');}
   catch(err){toast(err.message)}
 };
 $('#mcqButton').onclick=async()=>{
-  if(!user)return openAuth();
   try{lastQuiz=await api('/api/generate',{method:'POST',body:{topic:$('#topicInput').value||selectedSubject}});$('#mcqResults').innerHTML=lastQuiz.mcq.map((q,i)=>`<div class="quiz-q"><b>${i+1}. ${esc(q.q)}</b>${q.options.map((o,j)=>`<label><input type="radio" name="q${i}" value="${j}">${esc(o)}</label>`).join('')}</div>`).join('')+'<button id="gradeQuiz" class="full">Check answers</button><div id="quizScore"></div>';
     $('#gradeQuiz').onclick=()=>{let score=0;lastQuiz.mcq.forEach((q,i)=>{const a=document.querySelector(`input[name="q${i}"]:checked`);if(a&&Number(a.value)===q.answer)score++});$('#quizScore').innerHTML=`<p class="score">Your score: ${score}/${lastQuiz.mcq.length}</p>`};
   }catch(err){toast(err.message)}
