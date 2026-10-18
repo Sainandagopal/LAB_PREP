@@ -1,17 +1,15 @@
 services:
   - type: web
-    name: labprep-ai
-    runtime: node
-    plan: free
-    healthCheckPath: /api/health
-    buildCommand: npm install
-    startCommand: npm start
+    name: lab-prep
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
     envVars:
-      - key: NODE_ENV
-        value: production
-      - key: SESSION_SECRET
+      - key: SECRET_KEY
         generateValue: true
-    # Free plan: the filesystem is wiped on every restart/redeploy/idle spin-down, so accounts and PDFs are lost.
-    # For durable data (paid plans), attach a Persistent Disk mounted at /var/data and add:
-    #   - key: STORAGE_DIR
-    #     value: /var/data
+      - key: OPENAI_API_KEY
+        sync: false
+    disk:
+      name: uploads
+      mountPath: /opt/render/project/src/uploads
+      sizeGB: 1
