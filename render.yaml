@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: labprep-ai
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+    # For durable uploaded PDFs, attach a Render Persistent Disk
+    # at /opt/render/project/src/storage (paid Render plans).

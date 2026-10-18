@@ -23,13 +23,31 @@ function saveDB(db) { fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2)); }
 
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
+const SESSION_SECRET = (process.env.SESSION_SECRET || '').trim() || crypto.randomBytes(32).toString('hex');
+
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'change-this-development-secret',
+  secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   cookie: { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 }
 }));
-app.use(express.static(path.join(__dirname, 'public')));
+const publicFolder = path.join(__dirname, 'public');
+const frontendFolder = fs.existsSync(path.join(publicFolder, 'index.html'))
+  ? publicFolder
+  : __dirname;
+
+// Serve frontend assets from public/ when present, otherwise from project root.
+app.use(express.static(frontendFolder));
+
+// Explicit homepage route prevents 'Cannot GET /' when static index lookup fails.
+app.get('/', (req, res) => {
+  res.sendFile(path.join(frontendFolder, 'index.html'), (err) => {
+    if (err && !res.headersSent) {
+      console.error('Unable to serve index.html:', err);
+      res.status(500).send('Unable to load the homepage. Check that index.html exists in the project root or public folder.');
+    }
+  });
+});
 
 const upload = multer({
   storage: multer.diskStorage({
