@@ -362,19 +362,186 @@ function offlineCheck(modelAnswer, userAnswer) {
 /* ------------------------------------------------------------------ */
 /* AI (any OpenAI-compatible provider)                                 */
 /* ------------------------------------------------------------------ */
-function aiConfig() {
+// Looks for the key under several common names (case-insensitive) so a small typo in the hosting settings still works.
+const KEY_VARS = ['AI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_AI_API_KEY'];
+function cleanEnv(v) { return String(v || '').trim().replace(/^["'`]+|["'`]+$/g, '').trim(); }
+function findKeyVar() {
   const env = process.env;
-  const key = (env.AI_API_KEY || env.GEMINI_API_KEY || '').trim();
-  if (!key) return null;
-  const gemini = !env.AI_API_KEY && !!env.GEMINI_API_KEY;
-  const base = (env.AI_BASE_URL || (gemini ? 'https://generativelanguage.googleapis.com/v1beta/openai' : 'https://api.openai.com/v1')).trim().replace(/\/+$/, '');
-  const model = (env.AI_MODEL || (gemini ? 'gemini-3.8-flash' : 'gpt-4o-mini')).trim();
-  return { key, base, model };
+  for (const want of KEY_VARS) {
+    const name = Object.keys(env).find((k) => k.trim().toUpperCase() === want && cleanEnv(env[k]));
+    if (name) return name;
+  }
+  // Last resort: any setting whose value is shaped like a Google AI key (AIza... or AQ....), whatever it is called.
+  return Object.keys(env).find((k) => /^(AIza[\w-]{30,}|AQ\.[\w.-]{20,})$/.test(cleanEnv(env[k]))) || null;
+}
+function envValue(...names) {
+  for (const want of names) {
+    const name = Object.keys(process.env).find((k) => k.trim().toUpperCase() === want && cleanEnv(process.env[k]));
+    if (name) return cleanEnv(process.env[name]);
+  }
+  return '';
+}
+function aiConfig() {
+  const keyVar = findKeyVar();
+  if (!keyVar) return null;
+  const key = cleanEnv(process.env[keyVar]);
+  const customBase = envValue('AI_BASE_URL').replace(/\/+$/, '');
+  const googleKey = /^(AIza|AQ\.)/.test(key) || /GEMINI|GOOGLE/i.test(keyVar) || /generativelanguage\.googleapis\.com/.test(customBase);
+  // (a key named by the user as AI_API_KEY with an OpenAI-style value stays on the OpenAI route)
+  if (googleKey) {
+    const base = envValue('GEMINI_BASE_URL') || 'https://generativelanguage.googleapis.com/v1beta';
+    return { provider: 'gemini', keyVar, key, base: base.replace(/\/+$/, ''), model: (envValue('AI_MODEL', 'GEMINI_MODEL') || 'gemini-3.8-flash').replace(/^models\//, '') };
+  }
+  return { provider: 'openai', keyVar, key, base: (customBase || 'https://api.openai.com/v1'), model: envValue('AI_MODEL') || 'gpt-4o-mini' };
+}
+// Names (never values) of settings that look AI-related, to help diagnose a mistyped variable on the host.
+function relatedEnvNames() {
+  return Object.keys(process.env).filter((k) => /gemini|google|(^|_)ai(_|$)|api_?key/i.test(k) && !/^(npm_|RENDER_)/i.test(k)).slice(0, 12);
 }
 
 function providerMessage(payload) {
   const p = Array.isArray(payload) ? payload[0] : payload;
-  return (p && p.error && (p.error.message || p.error)) || (p && p.message) || '';
+  return String((p && p.error && (p.error.message || (typeof p.error === 'string' ? p.error : ''))) || (p && p.message) || '').slice(0, 300);
+}
+
+async function httpJson(url, { headers, body, method = 'POST' }) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 110000);
+  try {
+    const res = await fetch(url, { method, signal: ctl.signal, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    const payload = await res.json().catch(() => null);
+    return { status: res.status, ok: res.ok, payload };
+  } catch (err) {
+    if (err && err.name === 'AbortError') { const e = new Error('The AI took too long to answer.'); e.retryable = true; throw e; }
+    const e = new Error('Could not reach the AI service.'); e.retryable = true; throw e;
+  } finally { clearTimeout(timer); }
+}
+
+function failure(status, payload, fallbackLabel) {
+  const detail = providerMessage(payload);
+  const e = new Error(
+    status === 429 ? 'The AI quota or rate limit was reached. Wait a minute and try again.'
+    : status === 401 || status === 403 ? `The AI key was rejected (${detail || 'HTTP ' + status}).`
+    : status === 404 ? `The AI model or address was not found (${detail || 'HTTP 404'}).`
+    : status === 400 ? `The AI rejected the request (${detail || 'HTTP 400'}).`
+    : `${fallbackLabel || 'The AI service'} returned HTTP ${status}. ${detail}`.trim());
+  e.status = status;
+  e.retryable = [429, 500, 502, 503, 504].includes(status);
+  return e;
+}
+
+// Pulls the answer text out of whichever response shape a Gemini route returned.
+function geminiText(payload) {
+  if (!payload) return '';
+  if (typeof payload.output_text === 'string' && payload.output_text) return payload.output_text;
+  const cand = payload.candidates && payload.candidates[0];
+  if (cand && cand.content && Array.isArray(cand.content.parts)) {
+    const t = cand.content.parts.filter((p) => !p.thought).map((p) => p.text || '').join('');
+    if (t) return t;
+  }
+  const oa = payload.choices && payload.choices[0] && payload.choices[0].message && payload.choices[0].message.content;
+  if (oa) return String(oa);
+  const walk = (v) => {
+    if (!v) return '';
+    if (Array.isArray(v)) { for (let i = v.length - 1; i >= 0; i--) { const t = walk(v[i]); if (t) return t; } return ''; }
+    if (typeof v === 'object') {
+      if (typeof v.text === 'string' && v.text) return v.text;
+      return walk(v.content) || walk(v.parts) || walk(v.steps) || walk(v.outputs);
+    }
+    return '';
+  };
+  return walk(payload.steps) || walk(payload.outputs);
+}
+
+const gemState = { mode: null, model: null, models: null };
+const GEM_MODES = ['native', 'openai-key', 'openai-bearer', 'interactions'];
+
+async function gemListModels(cfg) {
+  const r = await httpJson(`${cfg.base}/models?pageSize=200`, { method: 'GET', headers: { 'x-goog-api-key': cfg.key } });
+  if (!r.ok) throw failure(r.status, r.payload, 'Listing models');
+  return (r.payload.models || []).filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => String(m.name).replace(/^models\//, ''));
+}
+function pickFlash(names) {
+  const ok = names.filter((n) => /^gemini/.test(n) && /flash/.test(n) && !/(lite|image|tts|live|audio|embedding|robotics|thinking|exp|vision|computer)/.test(n));
+  const score = (n) => {
+    const v = (/gemini-(\d+(?:\.\d+)?)/.exec(n) || [0, 0])[1];
+    return Number(v) * 10 + (/preview|beta/.test(n) ? 0 : 5) + (/latest/.test(n) ? -1 : 0);
+  };
+  return ok.sort((a, b) => score(b) - score(a))[0] || null;
+}
+
+async function geminiAttempt(mode, cfg, model, system, user, maxTokens) {
+  const root = cfg.base.replace(/\/v1beta$/, '');
+  let r;
+  if (mode === 'native') {
+    r = await httpJson(`${cfg.base}/models/${encodeURIComponent(model)}:generateContent`, {
+      headers: { 'x-goog-api-key': cfg.key, 'Content-Type': 'application/json' },
+      body: { systemInstruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts: [{ text: user }] }],
+        generationConfig: { temperature: 0.3, maxOutputTokens: maxTokens, responseMimeType: 'application/json' } }
+    });
+  } else if (mode === 'openai-key' || mode === 'openai-bearer') {
+    const headers = { 'Content-Type': 'application/json' };
+    if (mode === 'openai-key') headers['x-goog-api-key'] = cfg.key; else headers.Authorization = `Bearer ${cfg.key}`;
+    r = await httpJson(`${cfg.base}/openai/chat/completions`, { headers, body: { model, temperature: 0.3, max_tokens: maxTokens, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] } });
+  } else {
+    r = await httpJson(`${cfg.base}/interactions`, {
+      headers: { 'x-goog-api-key': cfg.key, 'Content-Type': 'application/json' },
+      body: { model, system_instruction: system, input: user, generation_config: { max_output_tokens: maxTokens } }
+    });
+  }
+  void root;
+  if (!r.ok) throw failure(r.status, r.payload);
+  const text = geminiText(r.payload);
+  if (!text) {
+    const block = r.payload && r.payload.promptFeedback && r.payload.promptFeedback.blockReason;
+    const e = new Error(block ? `The AI declined to read this document (${block}).` : 'The AI returned an empty answer.');
+    e.empty = true;
+    throw e;
+  }
+  return text;
+}
+
+// Tries Google's routes in turn and remembers the one that works; also repairs a wrong model name.
+async function geminiChat(cfg, system, user, maxTokens) {
+  let model = gemState.model || cfg.model;
+  const modes = gemState.mode ? [gemState.mode, ...GEM_MODES.filter((m) => m !== gemState.mode)] : GEM_MODES;
+  const errors = [];
+  let resolved = false;
+  for (let i = 0; i < modes.length; i++) {
+    const mode = modes[i];
+    try {
+      const text = await geminiAttempt(mode, cfg, model, system, user, maxTokens);
+      gemState.mode = mode; gemState.model = model;
+      return text;
+    } catch (err) {
+      errors.push({ mode, error: err.message });
+      if (err.status === 429 || err.retryable && err.status !== undefined) { err.details = errors; throw err; }
+      if (err.status === 404 && !resolved && /model|not found|not supported/i.test(err.message)) {
+        resolved = true;
+        try {
+          const names = gemState.models || (gemState.models = await gemListModels(cfg));
+          const pick = pickFlash(names);
+          if (pick && pick !== model) { model = pick; i--; continue; }
+        } catch (e) { errors.push({ mode: 'list-models', error: e.message }); }
+      }
+      if (err.retryable) { err.details = errors; throw err; }
+    }
+  }
+  const first = errors.find((e) => e.mode === 'native') || errors[0];
+  const e = new Error(first ? first.error : 'The AI request failed.');
+  e.details = errors;
+  throw e;
+}
+
+async function openaiChat(cfg, messages, maxTokens) {
+  const r = await httpJson(`${cfg.base}/chat/completions`, {
+    headers: { Authorization: `Bearer ${cfg.key}`, 'Content-Type': 'application/json' },
+    body: { model: cfg.model, temperature: 0.3, max_tokens: maxTokens, messages }
+  });
+  if (!r.ok) throw failure(r.status, r.payload);
+  const content = r.payload && r.payload.choices && r.payload.choices[0] && r.payload.choices[0].message && r.payload.choices[0].message.content;
+  if (!content) throw new Error('The AI returned an empty answer.');
+  return String(content);
 }
 
 async function chat(messages, { maxTokens = 6000 } = {}) {
@@ -382,34 +549,13 @@ async function chat(messages, { maxTokens = 6000 } = {}) {
   if (!cfg) throw new Error('AI is not configured.');
   let lastErr = new Error('AI request failed.');
   for (let attempt = 0; attempt < 3; attempt++) {
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), 110000);
-    let retryable = false;
     try {
-      const res = await fetch(`${cfg.base}/chat/completions`, {
-        method: 'POST', signal: ctl.signal,
-        headers: { Authorization: `Bearer ${cfg.key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: cfg.model, temperature: 0.3, max_tokens: maxTokens, messages })
-      });
-      const payload = await res.json().catch(() => null);
-      if (res.ok) {
-        const content = payload && payload.choices && payload.choices[0] && payload.choices[0].message && payload.choices[0].message.content;
-        if (!content) throw new Error('The AI returned an empty answer.');
-        return String(content);
-      }
-      retryable = [429, 500, 502, 503, 504].includes(res.status);
-      const detail = String(providerMessage(payload) || '').slice(0, 300);
-      lastErr = new Error(res.status === 429 ? 'The AI quota/rate limit was reached. Wait a minute and try again.'
-        : res.status === 401 || res.status === 403 ? `The AI key was rejected (${detail || 'HTTP ' + res.status}). Check AI_API_KEY.`
-        : res.status === 404 || res.status === 400 ? `The AI provider rejected the request (${detail || 'HTTP ' + res.status}). Check AI_MODEL and AI_BASE_URL.`
-        : `The AI service returned HTTP ${res.status}. ${detail}`.trim());
+      if (cfg.provider === 'gemini') return await geminiChat(cfg, messages[0].content, messages[1].content, maxTokens);
+      return await openaiChat(cfg, messages, maxTokens);
     } catch (err) {
-      if (err && err.name === 'AbortError') { lastErr = new Error('The AI took too long to answer.'); retryable = true; }
-      else if (err && /fetch failed/i.test(String(err.message))) { lastErr = new Error('Could not reach the AI service.'); retryable = true; }
-      else lastErr = err;
-      if (!retryable && !(err && err.name === 'AbortError')) throw lastErr;
-    } finally { clearTimeout(timer); }
-    if (!retryable) throw lastErr;
+      lastErr = err;
+      if (!err.retryable) throw err;
+    }
     await sleep(1500 * (attempt + 1));
   }
   throw lastErr;
@@ -652,7 +798,23 @@ async function handleApi(req, res, pathname) {
   if (pathname === '/api/health') return sendJson(res, 200, { ok: true, service: 'LabPrep AI' });
   if (pathname === '/api/status') {
     const cfg = aiConfig();
-    return sendJson(res, 200, { ai: !!cfg, model: cfg ? cfg.model : null, needsCode: !!(process.env.ACCESS_CODE || '').trim() });
+    return sendJson(res, 200, {
+      ai: !!cfg, provider: cfg ? cfg.provider : null, model: cfg ? (gemState.model || cfg.model) : null, keyVar: cfg ? cfg.keyVar : null,
+      expected: KEY_VARS.slice(0, 3), seen: cfg ? [] : relatedEnvNames(), needsCode: !!(process.env.ACCESS_CODE || '').trim()
+    });
+  }
+  if (pathname === '/api/ai-test') {
+    requireCode(req);
+    rateLimit(req, 'test', 15);
+    const cfg = aiConfig();
+    if (!cfg) return sendJson(res, 200, { ok: false, error: `No AI key was found. Add a setting named GEMINI_API_KEY (or AI_API_KEY) on your host, then redeploy.`, seen: relatedEnvNames() });
+    try {
+      const out = await chat([{ role: 'system', content: 'Reply with only this JSON: {"ok": true}' }, { role: 'user', content: 'ping' }], { maxTokens: 256 });
+      parseJsonLoose(out);
+      return sendJson(res, 200, { ok: true, provider: cfg.provider, model: gemState.model || cfg.model, mode: gemState.mode || 'openai' });
+    } catch (err) {
+      return sendJson(res, 200, { ok: false, provider: cfg.provider, model: gemState.model || cfg.model, error: err.message, details: err.details || [] });
+    }
   }
   if (req.method !== 'POST') throw new HttpError(404, 'Not found.');
   requireCode(req);
@@ -698,7 +860,7 @@ function createServer() {
   return http.createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'same-origin');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'");
+    res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'");
     try {
       const pathname = new URL(req.url, 'http://localhost').pathname;
       if (pathname.startsWith('/api/')) return await handleApi(req, res, pathname);
@@ -724,7 +886,7 @@ if (require.main === module) {
   server.on('error', (err) => { console.error('Server failed to start:', err.message); process.exit(1); });
   server.listen(port, '0.0.0.0', () => {
     const cfg = aiConfig();
-    console.log(`LabPrep AI listening on ${port} — AI ${cfg ? `enabled (${cfg.model})` : 'not configured (offline mode)'}`);
+    console.log(`LabPrep AI listening on ${port} — AI ${cfg ? `enabled (${cfg.provider}, ${cfg.model}, key from ${cfg.keyVar})` : `not configured (offline mode). Looked for: ${KEY_VARS.join(', ')}. Related settings found: ${relatedEnvNames().join(', ') || 'none'}`}`);
     if (!frontendPath('index.html')) console.error('Frontend files not found: put index.html, app.js and styles.css in a public/ folder next to server.js.');
   });
   process.on('SIGTERM', () => server.close(() => process.exit(0)));
