@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#12233F">
+<title>LabPrep AI</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2312233F'/%3E%3Cpath d='M12 6h8v2h-1v6l5 9a2 2 0 0 1-2 3H10a2 2 0 0 1-2-3l5-9V8h-1z' fill='%23FFE45C'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="#/" aria-label="LabPrep AI home">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#12233F"/><path d="M12 6h8v2h-1v6l5 9a2 2 0 0 1-2 3H10a2 2 0 0 1-2-3l5-9V8h-1z" fill="#FFE45C"/></svg>
+    <span>LabPrep AI</span>
+  </a>
+  <button id="aiPill" class="pill" type="button">Checking AI…</button>
+</header>
+
+<main>
+  <section id="home">
+    <div class="intro">
+      <h1>Upload an experiment PDF. Walk into the lab ready.</h1>
+      <p class="lede">LabPrep reads your lab manual and gives you a short summary, the steps to carry out the experiment yourself, and viva questions that mark your answers.</p>
+      <ol class="flow" aria-label="How it works">
+        <li><b>Summary</b><span>What the experiment is and what result to expect.</span></li>
+        <li><b>Steps</b><span>An ordered plan you can tick off while you work.</span></li>
+        <li><b>Viva</b><span>Questions one at a time. Type or say your answer and get it checked.</span></li>
+      </ol>
+    </div>
+
+    <form id="uploadForm" class="sheet upload" novalidate>
+      <label id="drop" class="drop" for="pdfInput">
+        <input id="pdfInput" type="file" accept="application/pdf,.pdf">
+        <span class="drop-title" id="dropTitle">Choose a PDF or drop it here</span>
+        <span class="drop-hint" id="dropHint">Text-based PDF, up to 20 MB. Scanned images are not supported.</span>
+      </label>
+      <div class="upload-row">
+        <label class="field">Subject
+          <select id="subjectSelect"></select>
+        </label>
+        <button id="analyzeBtn" class="primary" type="submit">Analyze experiment</button>
+      </div>
+      <div id="progress" class="progress" role="status" aria-live="polite" hidden>
+        <div class="bar-track"><span></span></div>
+        <p id="progressText"></p>
+      </div>
+      <p id="uploadError" class="error" role="alert" hidden></p>
+    </form>
+
+    <section class="library" aria-labelledby="libTitle">
+      <div class="library-head">
+        <h2 id="libTitle">Your experiments</h2>
+        <div id="filters" class="chips" role="group" aria-label="Filter by subject"></div>
+      </div>
+      <div id="list" class="list"></div>
+      <p class="fine">Experiments are saved in this browser only. Clearing site data or using another device starts a fresh list.</p>
+    </section>
+  </section>
+
+  <section id="experiment" hidden></section>
+</main>
+
+<dialog id="codeDialog">
+  <form method="dialog" id="codeForm">
+    <h2>Access code needed</h2>
+    <p>The owner of this site asks for a code before the AI can be used.</p>
+    <label class="field">Access code <input id="codeInput" type="password" autocomplete="off" required></label>
+    <div class="dialog-actions"><button type="button" id="codeCancel" class="plain">Cancel</button><button class="primary" type="submit">Continue</button></div>
+  </form>
+</dialog>
+
+<dialog id="infoDialog">
+  <form method="dialog">
+    <h2 id="infoTitle"></h2>
+    <div id="infoBody"></div>
+    <div class="dialog-actions"><button class="primary" type="submit">Close</button></div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<script src="/app.js"></script>
+</body>
+</html>

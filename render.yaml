@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: labprep-ai
+    runtime: node
+    plan: free
+    healthCheckPath: /api/health
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 22.22.0
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: AI_MODEL
+        value: gemini-3.8-flash
+      # Optional: require a code before anyone can use the AI
+      # - key: ACCESS_CODE
+      #   sync: false

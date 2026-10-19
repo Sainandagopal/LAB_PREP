@@ -1,0 +1,12 @@
+{
+  "name": "labprep-ai",
+  "version": "2.0.0",
+  "private": true,
+  "description": "LabPrep AI: upload an experiment PDF, get a summary, step-by-step implementation steps and viva practice",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=22.13.0" },
+  "dependencies": {
+    "pdfjs-dist": "6.2.108"
+  }
+}
