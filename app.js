@@ -1,6 +1,6 @@
 'use strict';
 const $ = (s, r = document) => r.querySelector(s);
-const STORE_KEY = 'labprep.v2';
+let storeKey = 'labprep.v2'; // becomes labprep.u.<id> while signed in (a per-account cache of the server copy)
 const CODE_KEY = 'labprep.code';
 const LAST_SUBJECT_KEY = 'labprep.subject';
 const MAX_MB = 20;
@@ -28,11 +28,9 @@ const sameName = (a, b) => a.toLowerCase() === b.toLowerCase();
 /* ---------- storage (this browser only) ---------- */
 let items = [];
 let subjects = []; // { id, name, color }
-function loadData() {
-  let data = {};
-  try { data = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') || {}; } catch { data = {}; }
-  items = Array.isArray(data.items) ? data.items : [];
-  subjects = Array.isArray(data.subjects) ? data.subjects.filter((s) => s && s.id && s.name) : [];
+const newestFirst = (a, b) => (String(b.createdAt) > String(a.createdAt) ? 1 : String(b.createdAt) < String(a.createdAt) ? -1 : 0);
+function normalizeData() {
+  subjects = subjects.filter((s) => s && s.id && s.name);
   // Migrate older saves, where an experiment only carried a subject name.
   for (const it of items) {
     if (it.subjectId && subjects.some((s) => s.id === it.subjectId)) continue;
@@ -40,15 +38,31 @@ function loadData() {
   }
   items.forEach((it) => {
     it.steps = it.steps || []; it.viva = it.viva || []; it.requirements = it.requirements || []; it.keyPoints = it.keyPoints || [];
-    it.codeBlocks = it.codeBlocks || []; it.stepsDone = it.stepsDone || {}; it.scores = it.scores || {};
+    it.codeBlocks = it.codeBlocks || []; it.stepsDone = it.stepsDone || {}; it.scores = it.scores || {}; it.figures = it.figures || [];
   });
 }
-function saveData() {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify({ v: 3, subjects, items })); return true; }
+function readCache() {
+  let data = {};
+  try { data = JSON.parse(localStorage.getItem(storeKey) || '{}') || {}; } catch { data = {}; }
+  return { items: Array.isArray(data.items) ? data.items : [], subjects: Array.isArray(data.subjects) ? data.subjects : [], dirty: !!data.dirty };
+}
+function loadData() {
+  const c = readCache();
+  items = c.items; subjects = c.subjects;
+  normalizeData();
+}
+function writeCache(dirty) {
+  try { localStorage.setItem(storeKey, JSON.stringify({ v: 3, subjects, items, dirty: !!dirty })); return true; }
   catch {
-    toast('Browser storage is full or blocked, so changes will not be remembered. Delete old experiments to free space.');
+    if (!account.user) toast('Browser storage is full or blocked, so changes will not be remembered. Delete old experiments to free space.');
     return false;
   }
+}
+function saveData() {
+  rev++;
+  const ok = writeCache(!!account.user); // signed in: the cache is "unsynced" until the server confirms
+  if (account.user) scheduleSync();
+  return ok;
 }
 const findItem = (id) => items.find((x) => x.id === id);
 const subjectById = (id) => subjects.find((s) => s.id === id);
@@ -66,6 +80,8 @@ const subjectOf = (it) => subjectById(it.subjectId) || { name: DEFAULT_SUBJECT, 
 
 /* ---------- API ---------- */
 let status = { ai: false, needsCode: false };
+let account = { enabled: false, user: null, note: '', limit: 60 };
+let rev = 0;
 function askCode() {
   return new Promise((resolve) => {
     const dlg = $('#codeDialog');
@@ -80,7 +96,7 @@ function askCode() {
   });
 }
 async function api(url, { method = 'GET', json, form, signal } = {}, retried = false) {
-  const headers = {};
+  const headers = { 'x-labprep': '1' };
   let code = '';
   try { code = localStorage.getItem(CODE_KEY) || ''; } catch {}
   if (code) headers['x-access-code'] = code;
@@ -95,6 +111,11 @@ async function api(url, { method = 'GET', json, form, signal } = {}, retried = f
   }
   let data = {};
   try { data = await res.json(); } catch {}
+  if (res.status === 401 && data.code === 'login' && account.enabled) {
+    account.user = null; renderAcct();
+    if (!$('#authDialog').open) openAuth('signin');
+    const e = new Error('Please sign in to continue.'); e.status = 401; throw e;
+  }
   if (res.status === 401 && status.needsCode && !retried) {
     const entered = await askCode();
     if (entered) {
@@ -102,7 +123,7 @@ async function api(url, { method = 'GET', json, form, signal } = {}, retried = f
       return api(url, { method, json, form, signal }, true);
     }
   }
-  if (!res.ok) throw new Error(data.error || `The server returned an error (${res.status}).`);
+  if (!res.ok) { const e = new Error(data.error || `The server returned an error (${res.status}).`); e.status = res.status; throw e; }
   return data;
 }
 
@@ -113,10 +134,20 @@ async function loadStatus() {
     status = await api('/api/status');
     pill.className = 'ai-pill ' + (status.ai ? 'on' : '');
     pill.textContent = status.ai ? 'AI on' : 'AI off';
+    account.enabled = !!(status.accounts && status.accounts.enabled);
+    account.note = (status.accounts && status.accounts.note) || '';
+    if (status.accounts && status.accounts.maxExperiments) account.limit = status.accounts.maxExperiments;
+    account.user = status.user || null;
   } catch {
     pill.className = 'ai-pill err';
     pill.textContent = 'Server unreachable';
   }
+  renderAcct();
+  if (!$('#pdfInput').files || !$('#pdfInput').files[0]) setFile(null);
+}
+function acctInfoHtml() {
+  if (account.enabled) return `<h3 class="dlg-h">Accounts</h3><p class="muted">Sign-in and cloud saving are on.${account.user ? ` You are signed in as <b>${esc(account.user.email)}</b>.` : ''}</p>`;
+  return `<h3 class="dlg-h">Accounts</h3><p class="muted">Off. ${esc(account.note || '')} To let people sign in and keep their experiments on every device, add a free Neon database (the README shows how).</p>`;
 }
 function openInfo() {
   const names = (status.expected || ['AI_API_KEY', 'GEMINI_API_KEY']).map((n) => `<code>${esc(n)}</code>`).join(', ');
@@ -124,7 +155,8 @@ function openInfo() {
     $('#infoTitle').textContent = 'AI is on';
     $('#infoBody').innerHTML = `<p>Summaries, steps and viva questions are written by <b>${esc(status.model || 'the AI model')}</b>, and your typed viva answers are graded by it.</p>
       <p class="muted">Key found in <code>${esc(status.keyVar || '')}</code>. Press the test button to confirm the key really works.</p>
-      <div id="testOut" class="test-out" hidden></div>`;
+      ${status.readsPdf ? '<p class="muted">Scanned pages, diagrams and tables in your PDFs are read by the AI too.</p>' : '<p class="muted">Scanned PDFs and diagrams need a Gemini key.</p>'}
+      <div id="testOut" class="test-out" hidden></div>${acctInfoHtml()}`;
   } else {
     const seen = (status.seen || []).length ? `<p class="muted">Settings the server can see that look related: ${status.seen.map((n) => `<code>${esc(n)}</code>`).join(', ')}. None of them is a name the site reads.</p>` : '';
     $('#infoTitle').textContent = 'AI is off';
@@ -133,7 +165,7 @@ function openInfo() {
         <li>Add a variable named <code>GEMINI_API_KEY</code> and paste your Gemini key as its value.</li>
         <li>Save. Render redeploys. Reload this page.</li></ol>
       <p class="muted">The site reads any of these names: ${names}.</p>${seen}
-      <div id="testOut" class="test-out" hidden></div>`;
+      <div id="testOut" class="test-out" hidden></div>${acctInfoHtml()}`;
   }
   $('#infoTest').hidden = false;
   $('#infoDialog').showModal();
@@ -166,7 +198,7 @@ $('#infoTest').onclick = async () => {
 };
 
 /* ---------- small text dialog (add / rename subject) ---------- */
-function askText({ title, label, value = '', ok = 'Save', validate }) {
+function askText({ title, label, value = '', ok = 'Save', validate, type = 'text', raw = false, maxlength = 40 }) {
   return new Promise((resolve) => {
     const dlg = $('#textDialog');
     const form = $('#textForm');
@@ -175,14 +207,17 @@ function askText({ title, label, value = '', ok = 'Save', validate }) {
     $('#textTitle').textContent = title;
     $('#textLabel').textContent = label;
     $('#textOk').textContent = ok;
+    input.type = type;
+    input.maxLength = maxlength;
+    input.autocomplete = type === 'password' ? 'current-password' : 'off';
     input.value = value;
     err.hidden = true;
     let done = false;
     const finish = (v) => { if (done) return; done = true; form.onsubmit = null; $('#textCancel').onclick = null; dlg.onclose = null; if (dlg.open) dlg.close(); resolve(v); };
     form.onsubmit = (e) => {
       e.preventDefault();
-      const v = cleanName(input.value);
-      const problem = !v ? 'Type a name first.' : validate ? validate(v) : '';
+      const v = raw ? input.value : cleanName(input.value);
+      const problem = !v ? (raw ? 'Type it first.' : 'Type a name first.') : validate ? validate(v) : '';
       if (problem) { err.textContent = problem; err.hidden = false; input.focus(); return; }
       finish(v);
     };
@@ -193,6 +228,218 @@ function askText({ title, label, value = '', ok = 'Save', validate }) {
     input.select();
   });
 }
+
+/* ---------- accounts + cloud sync ---------- */
+let synced = { subjects: '[]', items: new Map() }; // what the server is known to hold
+let syncTimer = null, syncing = false, syncState = 'saved', retryDelay = 4000;
+
+function setSyncState(st) {
+  syncState = st;
+  const el = $('#syncState');
+  if (el) el.textContent = st === 'saved' ? 'All changes saved' : st === 'saving' ? 'Saving…' : 'Could not save yet. Retrying…';
+}
+function snapshot() { return { subjects: JSON.stringify(subjects.map((s) => ({ id: s.id, name: s.name, color: s.color }))), items: new Map(items.map((i) => [i.id, JSON.stringify(i)])) }; }
+function scheduleSync(delay = 500) {
+  clearTimeout(syncTimer);
+  setSyncState('saving');
+  syncTimer = setTimeout(pushNow, delay);
+}
+async function pushNow() {
+  if (!account.user) return;
+  if (syncing) { scheduleSync(800); return; }
+  syncing = true;
+  const startRev = rev;
+  const now = snapshot();
+  const upsert = [], remove = [];
+  for (const [id, json] of now.items) if (synced.items.get(id) !== json) upsert.push(JSON.parse(json));
+  for (const id of synced.items.keys()) if (!now.items.has(id)) remove.push(id);
+  const subjectsChanged = now.subjects !== synced.subjects;
+  if (!upsert.length && !remove.length && !subjectsChanged) {
+    syncing = false;
+    if (rev === startRev) { writeCache(false); setSyncState('saved'); }
+    return;
+  }
+  try {
+    await api('/api/sync', { method: 'POST', json: { ...(subjectsChanged ? { subjects: JSON.parse(now.subjects) } : {}), upsert, remove } });
+    synced = now;
+    retryDelay = 4000;
+    syncing = false;
+    if (rev === startRev) { writeCache(false); setSyncState('saved'); } else scheduleSync(200);
+  } catch (err) {
+    syncing = false;
+    setSyncState('error');
+    if (err.status === 401) return; // the sign-in dialog is already open
+    if (err.status && err.status < 500 && err.status !== 429) { toast(err.message); return; } // retrying would not help
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(pushNow, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 60000);
+  }
+}
+window.addEventListener('beforeunload', (e) => { if (account.user && syncState !== 'saved') { e.preventDefault(); e.returnValue = ''; } });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && account.user && syncState !== 'saved') { clearTimeout(syncTimer); pushNow(); } });
+
+// Loads the account's library. If this browser holds edits the server has not confirmed, those win and are pushed.
+async function initAccountData() {
+  const cache = readCache();
+  let d;
+  try { d = await api('/api/library'); }
+  catch (err) {
+    if (err.status !== 401) toast('Could not reach your account. Showing the copy saved on this device.');
+    return;
+  }
+  if (d.limits && d.limits.experiments) account.limit = d.limits.experiments;
+  const serverItems = Array.isArray(d.items) ? d.items : [];
+  const serverSubjects = (Array.isArray(d.subjects) ? d.subjects : []).map((s) => ({ id: s.id, name: s.name, color: s.color }));
+  synced = { subjects: JSON.stringify(serverSubjects), items: new Map(serverItems.map((i) => [i.id, JSON.stringify(i)])) };
+  if (cache.dirty) {
+    items = cache.items; subjects = cache.subjects; normalizeData();
+    await pushNow();
+  } else {
+    items = serverItems.sort(newestFirst); subjects = serverSubjects; normalizeData();
+    writeCache(false);
+    setSyncState('saved');
+  }
+}
+
+// Experiments saved in this browser before the person signed in are offered to the account once.
+async function maybeImportLocal() {
+  if (!account.user) return;
+  const flag = 'labprep.imp.' + account.user.id;
+  try { if (localStorage.getItem(flag)) return; } catch {}
+  let local = {};
+  try { local = JSON.parse(localStorage.getItem('labprep.v2') || '{}') || {}; } catch { return; }
+  const li = Array.isArray(local.items) ? local.items : [];
+  if (!li.length) return;
+  try { localStorage.setItem(flag, '1'); } catch {}
+  if (!confirm(`This browser has ${li.length} experiment${li.length === 1 ? '' : 's'} saved from before you signed in. Add ${li.length === 1 ? 'it' : 'them'} to your account?`)) return;
+  const old = Array.isArray(local.subjects) ? local.subjects : [];
+  const nameOf = (it) => { const s = old.find((x) => x.id === it.subjectId); return s ? s.name : (it.subject || DEFAULT_SUBJECT); };
+  let added = 0;
+  for (const it of li) {
+    if (items.some((x) => x.id === it.id) || items.length >= account.limit) continue;
+    const sub = subjectByName(nameOf(it), true);
+    items.push({ ...it, subjectId: sub.id });
+    added++;
+  }
+  normalizeData();
+  items.sort(newestFirst);
+  saveData();
+  try { localStorage.removeItem('labprep.v2'); } catch {}
+  toast(added ? `Added ${added} experiment${added === 1 ? '' : 's'} to your account.` : 'Nothing could be added.');
+}
+
+function renderAcct() {
+  const el = $('#acct');
+  const hint = $('#signinHint');
+  if (!account.enabled) { el.innerHTML = ''; hint.hidden = true; return; }
+  if (account.user) {
+    const e = account.user.email;
+    el.innerHTML = `<details class="menu acct-menu"><summary class="btn outline sm" aria-label="Account menu"><span class="avatar">${esc(e[0].toUpperCase())}</span><span class="acct-email">${esc(e)}</span></summary>
+      <div class="menu-list"><div class="menu-email">${esc(e)}</div><div class="menu-sync" id="syncState"></div>
+      <button type="button" data-acct="logout">Sign out</button><button type="button" class="danger-t" data-acct="delete">Delete account</button></div></details>`;
+    hint.hidden = true;
+    setSyncState(syncState);
+  } else {
+    el.innerHTML = '<button class="btn outline sm" type="button" data-acct="signin">Sign in</button>';
+    hint.hidden = false;
+  }
+}
+
+function openAuth(mode = 'register', after) {
+  const dlg = $('#authDialog');
+  let m = mode;
+  const err = $('#authError');
+  const paint = () => {
+    $('#authTitle').textContent = m === 'signin' ? 'Sign in' : 'Create your account';
+    $('#authLead').textContent = m === 'signin' ? 'Welcome back. Your subjects and experiments will load.' : 'Save your subjects and experiments to your account and open them on any phone or computer.';
+    $('#authOk').textContent = m === 'signin' ? 'Sign in' : 'Create account';
+    $('#authSwitchText').textContent = m === 'signin' ? 'New here?' : 'Already have an account?';
+    $('#authSwitch').textContent = m === 'signin' ? 'Create an account' : 'Sign in';
+    $('#authPass').autocomplete = m === 'signin' ? 'current-password' : 'new-password';
+    $('#authPassHint').hidden = m === 'signin';
+    err.hidden = true;
+  };
+  paint();
+  $('#authSwitch').onclick = () => { m = m === 'signin' ? 'register' : 'signin'; paint(); };
+  $('#authCancel').onclick = () => dlg.close();
+  $('#authForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const email = $('#authEmail').value.trim(), password = $('#authPass').value;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@.]{2,}$/.test(email)) { err.textContent = 'Enter a valid email address.'; err.hidden = false; return; }
+    if (m === 'register' && password.length < 8) { err.textContent = 'Use a password with at least 8 characters.'; err.hidden = false; return; }
+    if (!password) { err.textContent = 'Enter your password.'; err.hidden = false; return; }
+    const ok = $('#authOk');
+    ok.disabled = true;
+    err.hidden = true;
+    try {
+      const d = await api(m === 'signin' ? '/api/auth/login' : '/api/auth/register', { method: 'POST', json: { email, password } });
+      $('#authPass').value = '';
+      dlg.close();
+      await onSignedIn(d.user);
+      if (after) after();
+    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+    finally { ok.disabled = false; }
+  };
+  if (!dlg.open) dlg.showModal();
+  $('#authEmail').focus();
+}
+
+function resetState() {
+  Object.keys(sessions).forEach((k) => delete sessions[k]);
+  items = []; subjects = []; filter = 'all';
+  synced = { subjects: '[]', items: new Map() };
+  clearTimeout(syncTimer); syncing = false; syncState = 'saved';
+}
+async function onSignedIn(user) {
+  resetState();
+  account.user = user;
+  storeKey = 'labprep.u.' + user.id;
+  loadData();
+  renderAcct();
+  route();
+  await initAccountData();
+  await maybeImportLocal();
+  route();
+  loadStatus();
+}
+async function signOut() {
+  if (syncState !== 'saved') { clearTimeout(syncTimer); await pushNow(); }
+  const id = account.user && account.user.id;
+  try { await api('/api/auth/logout', { method: 'POST', json: {} }); } catch {}
+  try { if (id) localStorage.removeItem('labprep.u.' + id); } catch {}
+  afterSignedOut();
+  toast('Signed out.');
+}
+function afterSignedOut() {
+  resetState();
+  account.user = null;
+  storeKey = 'labprep.v2';
+  renderAcct();
+  if (location.hash !== '#/' && location.hash !== '') location.hash = '#/'; else route();
+}
+async function deleteAccount() {
+  const password = await askText({ title: 'Delete your account', label: 'Type your password to confirm. Your subjects and experiments will be deleted for good.', ok: 'Delete account', type: 'password', raw: true, maxlength: 200 });
+  if (!password) return;
+  try {
+    await api('/api/account/delete', { method: 'POST', json: { password } });
+    const id = account.user && account.user.id;
+    try { if (id) { localStorage.removeItem('labprep.u.' + id); localStorage.removeItem('labprep.imp.' + id); } } catch {}
+    afterSignedOut();
+    toast('Your account was deleted.');
+  } catch (err) { toast(err.message); }
+}
+document.addEventListener('click', (e) => {
+  const open = document.querySelector('.acct-menu[open]');
+  if (open && !e.target.closest('.acct-menu')) open.open = false;
+  const b = e.target.closest('[data-acct]');
+  if (!b) return;
+  if (open) open.open = false;
+  const a = b.dataset.acct;
+  if (a === 'signin') openAuth('signin');
+  else if (a === 'register') openAuth('register');
+  else if (a === 'logout') signOut();
+  else if (a === 'delete') deleteAccount();
+});
 
 /* ---------- subject management ---------- */
 let filter = 'all'; // 'all' or a subject id
@@ -284,7 +531,7 @@ function setFile(file) {
   const f = input.files && input.files[0];
   $('#drop').classList.toggle('has-file', !!f);
   $('#dropTitle').textContent = f ? f.name : 'Drop your experiment PDF here';
-  $('#dropHint').textContent = f ? `${(f.size / 1024 / 1024).toFixed(2)} MB. Choose a subject, then Analyze experiment.` : `or click to browse. Text-based PDF, up to ${MAX_MB} MB.`;
+  $('#dropHint').textContent = f ? `${(f.size / 1024 / 1024).toFixed(2)} MB. Choose a subject, then Analyze experiment.` : (status.readsPdf ? `or click to browse. PDF up to ${MAX_MB} MB. Scans and diagrams are read by AI.` : `or click to browse. Text-based PDF, up to ${MAX_MB} MB.`);
   showUploadError('');
 }
 function showUploadError(msg) {
@@ -308,6 +555,8 @@ $('#uploadForm').onsubmit = async (e) => {
   if (busy) return;
   const f = $('#pdfInput').files && $('#pdfInput').files[0];
   if (!f) return showUploadError('Choose a PDF file first.');
+  if (account.enabled && !account.user) { openAuth('register', () => $('#uploadForm').requestSubmit()); return; }
+  if (account.user && items.length >= account.limit) return showUploadError(`Your account can hold ${account.limit} experiments. Delete some you no longer need first.`);
   if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') return showUploadError('That file is not a PDF.');
   if (f.size > MAX_MB * 1024 * 1024) return showUploadError(`That PDF is larger than ${MAX_MB} MB.`);
   const typed = cleanName($('#subjectInput').value);
@@ -332,10 +581,11 @@ $('#uploadForm').onsubmit = async (e) => {
     const item = {
       id: uid(), subjectId: subj.id, createdAt: new Date().toISOString(), size: f.size,
       name: d.name || f.name, title: d.title || f.name, aim: d.aim || '', summary: d.summary || '', requirements: d.requirements || [],
-      keyPoints: d.keyPoints || [], steps: d.steps || [], viva: d.viva || [], codeBlocks: d.codeBlocks || [], text: d.text || '',
+      keyPoints: d.keyPoints || [], steps: d.steps || [], viva: d.viva || [], figures: d.figures || [], codeBlocks: d.codeBlocks || [], text: d.text || '',
       pages: d.pages || 0, truncated: !!d.truncated, provider: d.provider || 'offline', note: d.note || '',
       stepsDone: {}, completed: false, scores: {}, bestAvg: null
     };
+    if (account.user && JSON.stringify(item).length > 690 * 1024) throw new Error('This PDF is too long to save to your account. Split it into smaller parts and upload them separately.');
     items.unshift(item);
     saveData();
     $('#pdfInput').value = '';
@@ -356,7 +606,8 @@ function renderHome() {
   if (filter !== 'all' && !subjectById(filter)) filter = 'all';
   renderSubjectBar();
   const lib = $('.library');
-  lib.hidden = !items.length && !subjects.length;
+  lib.hidden = (account.enabled && !account.user) || (!items.length && !subjects.length);
+  $('#libNote').textContent = account.user ? 'Saved to your account. Sign in on any device to see them.' : 'Everything is saved in this browser only. Using another device or clearing site data starts a fresh list.';
   const shown = items.filter((i) => filter === 'all' || i.subjectId === filter);
   const cur = filter === 'all' ? null : subjectById(filter);
   $('#libTitle').textContent = cur ? cur.name : 'Your experiments';
@@ -456,6 +707,7 @@ function summaryHtml(it) {
     <p class="prose">${esc(it.summary)}</p>
     ${it.requirements.length ? `<h2>What you need</h2><ul class="pills">${it.requirements.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
     ${it.keyPoints.length ? `<h2>Points to remember</h2><ul class="points">${it.keyPoints.map((k) => `<li>${esc(k)}</li>`).join('')}</ul>` : ''}
+    ${it.figures.length ? `<h2>Diagrams and figures</h2><div class="figs">${it.figures.map((f) => `<div class="fig"><b>${esc(f.title)}</b><p>${esc(f.description)}</p></div>`).join('')}</div>` : ''}
     <div class="nextrow"><button class="btn primary" type="button" data-tab="steps">Continue to steps</button></div>
   </div>`;
 }
@@ -654,7 +906,7 @@ async function reanalyze(it) {
     const d = await api('/api/reanalyze', { method: 'POST', json: { name: it.name, text: it.text } });
     Object.assign(it, {
       title: d.title || it.title, aim: d.aim || '', summary: d.summary || '', requirements: d.requirements || [], keyPoints: d.keyPoints || [],
-      steps: d.steps || [], viva: d.viva || [], codeBlocks: d.codeBlocks || it.codeBlocks, provider: d.provider || 'offline', note: d.note || '',
+      steps: d.steps || [], viva: d.viva || [], figures: d.figures && d.figures.length ? d.figures : it.figures, codeBlocks: d.codeBlocks || it.codeBlocks, provider: d.provider || 'offline', note: d.note || '',
       stepsDone: {}, scores: {}, bestAvg: null
     });
     delete sessions[it.id];
@@ -788,8 +1040,17 @@ window.addEventListener('hashchange', () => {
   } else route();
 });
 
-loadData();
-saveData();
-setFile(null);
-route();
-loadStatus();
+async function init() {
+  setFile(null);
+  await loadStatus(); // tells us whether accounts are on and who is signed in
+  storeKey = account.user ? 'labprep.u.' + account.user.id : 'labprep.v2';
+  loadData();
+  if (!account.user) writeCache(false); // saves any migration of old data
+  route();
+  if (account.user) {
+    await initAccountData();
+    await maybeImportLocal();
+    route();
+  }
+}
+init();

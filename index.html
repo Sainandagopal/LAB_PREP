@@ -18,7 +18,7 @@
       <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#0F766E"/><path d="M12.5 7h7v2h-1v5.2l4.7 8.3a2 2 0 0 1-1.7 3H10.5a2 2 0 0 1-1.7-3l4.7-8.3V9h-1z" fill="#fff"/></svg>
       LabPrep AI
     </a>
-    <button id="aiPill" class="ai-pill" type="button">AI</button>
+    <div class="top-right"><div id="acct" class="acct"></div><button id="aiPill" class="ai-pill" type="button">AI</button></div>
   </div>
 </header>
 
@@ -52,6 +52,7 @@
       </div>
       <p id="uploadError" class="alert" role="alert" hidden></p>
     </form>
+    <p id="signinHint" class="signin-hint" hidden>Your experiments are saved to your account. <button type="button" class="linkbtn" data-acct="signin">Sign in</button> or create one when you press Analyze.</p>
 
     <ol id="how" class="how" aria-label="How it works">
       <li>
@@ -75,7 +76,7 @@
       <div id="subjectBar" class="subject-bar" role="group" aria-label="Subjects"></div>
       <div id="subjectTools" class="subject-tools" hidden></div>
       <div id="list" class="grid"></div>
-      <p class="fine">Everything is saved in this browser only. Using another device or clearing site data starts a fresh list.</p>
+      <p class="fine" id="libNote"></p>
     </section>
   </section>
 
@@ -88,6 +89,19 @@
     <label class="field"><span id="textLabel"></span><input id="textInput" maxlength="40" autocomplete="off"></label>
     <p id="textError" class="alert" hidden></p>
     <div class="dialog-actions"><button type="button" id="textCancel" class="btn ghost">Cancel</button><button class="btn primary" id="textOk" type="submit">Save</button></div>
+  </form>
+</dialog>
+
+<dialog id="authDialog">
+  <form id="authForm" novalidate>
+    <h2 id="authTitle">Create your account</h2>
+    <p id="authLead" class="muted"></p>
+    <label class="field"><span>Email</span><input id="authEmail" type="email" autocomplete="email" maxlength="120"></label>
+    <label class="field" style="margin-top:12px"><span>Password</span><input id="authPass" type="password" autocomplete="new-password" maxlength="200"></label>
+    <p id="authPassHint" class="muted small-note">At least 8 characters. There is no email reset, so choose one you will remember.</p>
+    <p id="authError" class="alert" role="alert" hidden></p>
+    <div class="dialog-actions"><button type="button" id="authCancel" class="btn ghost">Cancel</button><button class="btn primary" id="authOk" type="submit">Create account</button></div>
+    <p class="auth-switch"><span id="authSwitchText"></span> <button type="button" id="authSwitch" class="linkbtn"></button></p>
   </form>
 </dialog>
 

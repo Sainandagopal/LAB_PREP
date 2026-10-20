@@ -6,12 +6,13 @@ Upload an experiment PDF from your lab manual and get:
 2. **Steps** – an ordered plan to carry out the experiment yourself, with the code or commands for each step and tick boxes to track your progress.
 3. **Viva** – questions asked one at a time. Type (or say) your answer, and it is checked and scored out of 10, with the model answer shown after every question.
 
-Experiments are organised by subject you choose. Everything you create is stored **in your own browser**, so there are no accounts and nothing is lost when the free server restarts. (It also means experiments do not follow you to another phone or computer.)
+Experiments are organised by subject you choose. Without a database, everything you create is stored **in your own browser** (nothing is lost when the free server restarts, but experiments do not follow you to another device). With a free Neon database added, people can sign in and their experiments follow them everywhere.
 
 ## Folder layout
 
 ```
-server.js          the whole backend
+server.js          the backend
+accounts.js        sign-in and cloud saving (needs DATABASE_URL to switch on)
 package.json
 .node-version
 public/
@@ -21,7 +22,33 @@ public/
 ```
 
 Keep the three website files inside the `public/` folder. If they are uploaded next to `server.js` instead, the server still finds them.
-When you upload to GitHub, open your repository afterwards and check that you can see `server.js` **and** the `public` folder.
+When you upload to GitHub, open your repository afterwards and check that you can see `server.js`, `accounts.js` **and** the `public` folder.
+
+## Scanned PDFs and diagrams
+
+With the Gemini key set, the PDF itself is sent to Gemini, so it can:
+
+- read **scanned or photographed** manuals (the Source tab then shows the AI's transcription of the pages);
+- describe **diagrams, circuits, flowcharts, graphs and tables**. They appear under *Diagrams and figures* on the Summary tab.
+
+Code from text PDFs is still taken from the PDF's own text, so indentation stays exact. PDFs over about 14 MB are read as text only. Without a Gemini key, scanned PDFs are refused with a message saying so.
+
+## Accounts and saving to the cloud (free, about five minutes)
+
+By default every visitor's experiments live only in their own browser. To let people **sign in and keep their subjects and experiments on every phone and computer**, add a free Neon database:
+
+1. Go to https://neon.com, create a free account and a new project (pick the region closest to you).
+2. On the project page press **Connect** and copy the connection string. It starts with `postgresql://` and contains `neon.tech`.
+3. In Render open your service, then **Environment** and add `DATABASE_URL` with that string as its value. Save and wait for the redeploy.
+4. Open the site and click the **AI** pill. Under *Accounts* it should say **Sign-in and cloud saving are on**. If it says Off, it also says why.
+
+Then:
+- Visitors press **Sign in** (or just press *Analyze*, which asks them to create an account). Email and password; there is no email reset, so tell your friends to pick a password they will remember.
+- Uploading and the AI now need a sign-in, so strangers cannot use up your Gemini quota.
+- Experiments a person saved in the browser before signing in are offered to their account once.
+- Each account holds up to 60 experiments (`MAX_EXPERIMENTS_PER_USER`), and the site accepts up to 500 accounts (`MAX_USERS`) so the free database is not overrun.
+- Passwords are stored only as salted scrypt hashes. As the site owner you can see emails and saved experiments in your Neon dashboard, so tell your users that. A person can delete their account, and all their data, from the account menu.
+- Only Neon databases are supported (the site talks to Neon over plain HTTPS, so no extra packages are needed). The tables are created automatically.
 
 ## Subjects
 

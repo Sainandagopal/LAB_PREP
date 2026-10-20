@@ -12,6 +12,10 @@ services:
       # Paste your Gemini key in the Render dashboard (Environment). Never commit it to GitHub.
       - key: GEMINI_API_KEY
         sync: false
+      # Optional but recommended: a free Neon database so people can sign in and keep their experiments on every device.
+      # Paste its connection string in the Render dashboard (Environment). Never commit it to GitHub.
+      - key: DATABASE_URL
+        sync: false
       # Optional: force a model. Leave unset and the site picks a working Gemini Flash model by itself.
       # - key: AI_MODEL
       #   value: gemini-flash-latest

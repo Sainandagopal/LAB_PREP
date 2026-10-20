@@ -32,6 +32,26 @@ button{cursor:pointer}
 .ai-pill.on::before{background:#22C55E}
 .ai-pill.err::before{background:#EF4444}
 
+/* account + extras */
+.top-right{display:flex;align-items:center;gap:10px}
+.acct .btn{max-width:210px}
+.acct-menu summary{display:inline-flex;align-items:center;gap:8px;max-width:210px}
+.avatar{display:grid;place-items:center;flex:none;width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;font-size:.75rem;font-weight:700}
+.acct-email{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.menu-email{padding:8px 12px 2px;font-weight:600;font-size:.88rem;overflow-wrap:anywhere}
+.menu-sync{padding:0 12px 8px;color:var(--muted);font-size:.8rem;border-bottom:1px solid var(--line);margin-bottom:4px}
+.acct-menu .menu-list{min-width:230px}
+.signin-hint{max-width:720px;margin:14px auto 0;text-align:center;color:var(--muted);font-size:.92rem}
+.linkbtn{background:none;border:0;padding:0;color:var(--accent);font-weight:600;text-decoration:underline;cursor:pointer;font-size:inherit}
+.auth-switch{margin:16px 0 0;text-align:center;font-size:.92rem;color:var(--muted)}
+.small-note{font-size:.85rem;margin:8px 0 0}
+.dlg-h{font-size:.95rem;margin:18px 0 4px}
+.figs{display:grid;gap:10px}
+.fig{background:#F7F9FB;border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.fig b{display:block;margin-bottom:2px}
+.fig p{margin:0;color:var(--ink-2);font-size:.95rem}
+@media (max-width:720px){.acct-email{display:none}.acct .btn{max-width:none}}
+
 /* buttons & fields */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid transparent;border-radius:10px;padding:9px 16px;min-height:40px;font-weight:600;font-size:.95rem;text-decoration:none;transition:background .15s,border-color .15s,box-shadow .15s}
 .btn.lg{min-height:48px;padding:11px 24px;font-size:1rem}
