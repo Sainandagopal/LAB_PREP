@@ -274,3 +274,6 @@ dialog code{background:#EEF1F5;border-radius:5px;padding:1px 6px;font-family:var
 .followup{margin-top:14px;color:var(--ink-2)}
 .followup summary{cursor:pointer;font-weight:600;color:var(--accent-ink)}
 .followup p{margin-top:8px}
+
+/* ---- downloads ---- */
+.dlrow{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 18px}

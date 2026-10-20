@@ -8,6 +8,13 @@ Upload an experiment PDF from your lab manual and get:
 
 Experiments are organised by subject you choose. Without a database, everything you create is stored **in your own browser** (nothing is lost when the free server restarts, but experiments do not follow you to another device). With a free Neon database added, people can sign in and their experiments follow them everywhere.
 
+## Downloads
+
+Every experiment has a **Download** menu (and two buttons at the top of the Summary tab):
+
+- **Study notes (PDF)**: the aim, summary, steps with code, and viva questions with model answers, made in your browser as an A4 PDF. Letters outside Western European text (emoji, Japanese and so on) show as "?".
+- **Original PDF**: the file you uploaded. It is saved in the browser you uploaded from, because PDFs can be 20 MB and the free database is small. On another device, or for an experiment uploaded before this feature, pressing it asks you to choose the PDF once and then keeps it.
+
 ## Folder layout
 
 ```

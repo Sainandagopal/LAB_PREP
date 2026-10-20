@@ -423,6 +423,7 @@ async function deleteAccount() {
   if (!password) return;
   try {
     await api('/api/account/delete', { method: 'POST', json: { password } });
+    items.forEach((x) => deletePdf(x.id));
     const id = account.user && account.user.id;
     try { if (id) { localStorage.removeItem('labprep.u.' + id); localStorage.removeItem('labprep.imp.' + id); } } catch {}
     afterSignedOut();
@@ -591,9 +592,11 @@ $('#uploadForm').onsubmit = async (e) => {
     if (account.user && JSON.stringify(item).length > 690 * 1024) throw new Error('This PDF is too long to save to your account. Split it into smaller parts and upload them separately.');
     items.unshift(item);
     saveData();
+    await savePdf(item.id, f); // keep the original so it can be downloaded again
     $('#pdfInput').value = '';
     setFile(null);
     location.hash = `#/exp/${item.id}/summary`;
+    toast('Done. Download the study notes or your original PDF from the buttons at the top.');
   } catch (err) {
     showUploadError(err.message);
   } finally {
@@ -646,7 +649,7 @@ $('#list').onclick = (e) => {
   const b = e.target.closest('[data-del]');
   if (!b) return;
   const it = findItem(b.dataset.del);
-  if (it && confirm(`Delete “${it.title}” ${account.user ? 'from your account' : 'from this browser'}?`)) { items = items.filter((x) => x.id !== it.id); saveData(); renderHome(); toast('Experiment deleted.'); }
+  if (it && confirm(`Delete “${it.title}” ${account.user ? 'from your account' : 'from this browser'}?`)) { items = items.filter((x) => x.id !== it.id); deletePdf(it.id); saveData(); renderHome(); toast('Experiment deleted.'); }
 };
 
 /* ---------- experiment view ---------- */
@@ -675,6 +678,9 @@ function renderExperiment(id, tab) {
       <h1>${esc(it.title)}</h1>
       <div class="exp-actions">
         <button class="btn outline sm" type="button" data-act="complete">${it.completed ? 'Completed ✓' : 'Mark completed'}</button>
+        <details class="menu"><summary class="btn outline sm" aria-label="Download">Download</summary>
+          <div class="menu-list"><button type="button" data-act="dlnotes">Study notes (PDF)</button><button type="button" data-act="dlorig">Original PDF</button></div>
+        </details>
         <details class="menu"><summary class="btn outline sm" aria-label="More actions">More</summary>
           <div class="menu-list"><button type="button" data-act="reanalyze">Re-analyze</button><button type="button" class="danger-t" data-act="delete">Delete experiment</button></div>
         </details>
@@ -709,6 +715,7 @@ function paras(text) {
 function summaryHtml(it) {
   return `<div class="panel">
     <div class="aim"><small>AIM</small><p>${esc(it.aim || it.title)}</p></div>
+    <div class="dlrow"><button class="btn primary sm" type="button" data-act="dlnotes">Download study notes (PDF)</button><button class="btn outline sm" type="button" data-act="dlorig">Download original PDF</button></div>
     <h2>Summary</h2>
     ${paras(it.summary)}
     ${it.requirements.length ? `<h2>What you need</h2><ul class="pills">${it.requirements.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
@@ -969,8 +976,7 @@ async function copyText(text) {
 $('#experiment').addEventListener('click', (e) => {
   const it = findItem(currentId);
   if (!it) return;
-  const menu = $('#experiment .menu');
-  if (menu && menu.open && !e.target.closest('summary')) menu.open = false;
+  document.querySelectorAll('#experiment .menu[open]').forEach((m) => { if (!(m.contains(e.target) && e.target.closest('summary'))) m.open = false; });
   const tabBtn = e.target.closest('[data-tab]');
   if (tabBtn) { location.hash = `#/exp/${it.id}/${tabBtn.dataset.tab}`; return; }
   const copy = e.target.closest('[data-copy]');
@@ -986,8 +992,10 @@ $('#experiment').addEventListener('click', (e) => {
   const a = act.dataset.act;
   const s = sessions[it.id];
   if (a === 'complete') { it.completed = !it.completed; saveData(); renderExperiment(it.id, currentTab); }
-  else if (a === 'delete') { if (confirm(`Delete “${it.title}” ${account.user ? 'from your account' : 'from this browser'}?`)) { items = items.filter((x) => x.id !== it.id); delete sessions[it.id]; saveData(); location.hash = '#/'; toast('Experiment deleted.'); } }
+  else if (a === 'delete') { if (confirm(`Delete “${it.title}” ${account.user ? 'from your account' : 'from this browser'}?`)) { items = items.filter((x) => x.id !== it.id); deletePdf(it.id); delete sessions[it.id]; saveData(); location.hash = '#/'; toast('Experiment deleted.'); } }
   else if (a === 'reanalyze') reanalyze(it);
+  else if (a === 'dlnotes') downloadNotes(it);
+  else if (a === 'dlorig') downloadOriginal(it);
   else if (a === 'resetsteps') { it.stepsDone = {}; saveData(); renderTab(); }
   else if (a === 'vivastart') { const sh = $('#shuffle'); newSession(it, sh && !sh.checked ? it.viva.map((_, i) => i) : shuffled(it.viva.length)); renderTab(); }
   else if (a === 'vivaweak' && s) { const weak = s.order.filter((i) => s.results[i] == null || s.results[i] < 7); if (weak.length) { newSession(it, weak); renderTab(); } }
@@ -1038,6 +1046,253 @@ $('#experiment').addEventListener('keydown', (e) => {
 $('#experiment').addEventListener('input', (e) => {
   if (e.target.id === 'answer') { const it = findItem(currentId), s = it && sessions[it.id]; if (s) s.draft = e.target.value; }
 });
+
+/* ---------- downloads: study-notes PDF (built right here, no library) and the original PDF ---------- */
+// The original upload is kept in this browser (IndexedDB), because a PDF can be up to 20 MB, too big for the account database.
+const PDF_DB = 'labprep.files';
+function pdfDb() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) return reject(new Error('no indexedDB'));
+    const r = indexedDB.open(PDF_DB, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('pdfs');
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+}
+async function pdfStore(mode, fn) {
+  const db = await pdfDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('pdfs', mode);
+    const req = fn(tx.objectStore('pdfs'));
+    tx.oncomplete = () => { db.close(); resolve(req && req.result); };
+    tx.onerror = tx.onabort = () => { db.close(); reject(tx.error || new Error('storage failed')); };
+  });
+}
+async function savePdf(id, file) { try { await pdfStore('readwrite', (s) => s.put(file, id)); return true; } catch { return false; } }
+async function loadPdf(id) { try { return (await pdfStore('readonly', (s) => s.get(id))) || null; } catch { return null; } }
+async function deletePdf(id) { try { await pdfStore('readwrite', (s) => s.delete(id)); } catch {} }
+
+function saveBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 8000);
+}
+function fileBase(it) {
+  return String(it.title || it.name || 'experiment').replace(/\.pdf$/i, '').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-').slice(0, 60) || 'experiment';
+}
+
+// Standard Helvetica / Helvetica-Bold character widths (per 1000 units) for ASCII 32 to 126.
+const PDF_W = [278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556, 333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584];
+const PDF_WB = [278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 333, 333, 584, 584, 584, 611, 975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 333, 278, 333, 584, 556, 333, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611, 611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584];
+const CP1252 = { '€': 128, '‚': 130, 'ƒ': 131, '„': 132, '…': 133, '†': 134, '‡': 135, 'ˆ': 136, '‰': 137, 'Š': 138, '‹': 139, 'Œ': 140, 'Ž': 142, '‘': 145, '’': 146, '“': 147, '”': 148, '•': 149, '–': 150, '—': 151, '˜': 152, '™': 153, 'š': 154, '›': 155, 'œ': 156, 'ž': 158, 'Ÿ': 159 };
+const PDF_SUBS = { '→': '->', '←': '<-', '⇒': '=>', '≤': '<=', '≥': '>=', '≠': '!=', '✓': 'v', '☐': '[ ]', '−': '-', '‐': '-', '‑': '-', ' ': ' ', ' ': ' ', '​': '', '\t': '    ' };
+// Text to the single-byte codes the built-in PDF fonts use; anything they cannot show becomes "?".
+function pdfCodes(str) {
+  const out = [];
+  for (const ch0 of String(str == null ? '' : str)) {
+    const sub = PDF_SUBS[ch0];
+    for (const ch of (sub !== undefined ? sub : ch0)) {
+      const c = ch.codePointAt(0);
+      if (c >= 32 && c <= 126) out.push(c);
+      else if (c >= 160 && c <= 255) out.push(c);
+      else if (CP1252[ch]) out.push(CP1252[ch]);
+      else if (c === 10 || c === 13) out.push(32);
+      else out.push(63);
+    }
+  }
+  return out;
+}
+function pdfWidth(codes, font, size) {
+  if (font === 'm') return codes.length * 0.6 * size;
+  const tbl = font === 'b' ? PDF_WB : PDF_W;
+  let w = 0;
+  for (const c of codes) w += (c >= 32 && c <= 126 ? tbl[c - 32] : 556);
+  return (w / 1000) * size;
+}
+
+const pdfClip = (s, n) => { s = String(s || ''); return s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s; };
+const PDF_INK = [0.06, 0.09, 0.16], PDF_MUTED = [0.39, 0.45, 0.55], PDF_ACCENT = [0.059, 0.463, 0.431];
+
+function buildStudyPdf(it, subjectName) {
+  const W = 595.28, H = 841.89, M = 48, CW = W - 2 * M, BOT = 58, TOP = H - 52;
+  const FONT = { r: 'F1', b: 'F2', i: 'F3', m: 'F4' };
+  const pages = [];
+  let ops, y;
+  const newPage = () => { ops = []; pages.push(ops); y = TOP; };
+  newPage();
+  const hex = (codes) => codes.map((c) => c.toString(16).padStart(2, '0')).join('');
+  const need = (h) => { if (y - h < BOT) newPage(); };
+  const put = (str, font, size, x, yy, col) => {
+    const c = col || PDF_INK;
+    ops.push(`BT ${c[0]} ${c[1]} ${c[2]} rg /${FONT[font]} ${size} Tf ${x.toFixed(2)} ${yy.toFixed(2)} Td <${hex(pdfCodes(str))}> Tj ET`);
+  };
+  const wrap = (str, font, size, maxW) => {
+    const lines = [];
+    for (const para of String(str == null ? '' : str).split('\n')) {
+      const words = para.split(/\s+/).filter(Boolean);
+      if (!words.length) { lines.push(''); continue; }
+      let cur = '';
+      for (const w of words) {
+        const t = cur ? cur + ' ' + w : w;
+        if (pdfWidth(pdfCodes(t), font, size) <= maxW) { cur = t; continue; }
+        if (cur) lines.push(cur);
+        let rest = w;
+        while (pdfWidth(pdfCodes(rest), font, size) > maxW && rest.length > 1) {
+          let k = rest.length;
+          while (k > 1 && pdfWidth(pdfCodes(rest.slice(0, k)), font, size) > maxW) k--;
+          lines.push(rest.slice(0, k));
+          rest = rest.slice(k);
+        }
+        cur = rest;
+      }
+      lines.push(cur);
+    }
+    return lines;
+  };
+  const para = (str, { font = 'r', size = 10.5, indent = 0, col = PDF_INK, gap = 5, lead = 1.42, before = 0 } = {}) => {
+    if (!String(str || '').trim()) return;
+    y -= before;
+    for (const line of wrap(str, font, size, CW - indent)) {
+      need(size * lead);
+      y -= size * lead;
+      if (line) put(line, font, size, M + indent, y, col);
+    }
+    y -= gap;
+  };
+  const h1 = (str) => para(str, { font: 'b', size: 20, lead: 1.25, gap: 4 });
+  const h2 = (str) => {
+    need(46);
+    y -= 14;
+    y -= 14;
+    put(str, 'b', 13, M, y, PDF_ACCENT);
+    ops.push(`${PDF_ACCENT[0]} ${PDF_ACCENT[1]} ${PDF_ACCENT[2]} RG 0.8 w ${M} ${(y - 4).toFixed(2)} m ${M + CW} ${(y - 4).toFixed(2)} l S`);
+    y -= 9;
+  };
+  const bullet = (str, marker = '•') => {
+    const size = 10.5, lead = 1.42;
+    wrap(str, 'r', size, CW - 20).forEach((line, i) => {
+      need(size * lead);
+      y -= size * lead;
+      if (i === 0) put(marker, marker === '•' ? 'b' : 'b', size, M + 4, y, PDF_ACCENT);
+      if (line) put(line, 'r', size, M + 20, y);
+    });
+    y -= 3;
+  };
+  const code = (str) => {
+    const size = 8.6, lh = 12;
+    const maxChars = Math.max(20, Math.floor((CW - 16) / (0.6 * size)));
+    const lines = [];
+    for (const raw of String(str || '').replace(/\r/g, '').replace(/\t/g, '    ').split('\n')) {
+      if (!raw.length) { lines.push(''); continue; }
+      for (let i = 0; i < raw.length; i += maxChars) lines.push((i ? '  ' : '') + raw.slice(i, i + maxChars));
+    }
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    y -= 3;
+    for (const line of lines) {
+      need(lh);
+      ops.push(`0.945 0.953 0.965 rg ${M} ${(y - lh).toFixed(2)} ${CW} ${lh} re f`);
+      y -= lh;
+      if (line.trim()) put(line, 'm', size, M + 8, y + 3.4, [0.1, 0.13, 0.2]);
+    }
+    y -= 8;
+  };
+
+  /* ----- content ----- */
+  h1(it.title || 'Experiment');
+  const meta = [subjectName, fmtDate(it.createdAt), it.pages ? `${it.pages} page${it.pages === 1 ? '' : 's'} in the manual` : ''].filter(Boolean).join('   ·   ');
+  para(meta, { size: 9.5, col: PDF_MUTED, gap: 8 });
+  if (it.aim) {
+    h2('Aim');
+    para(it.aim, { font: 'b', size: 11 });
+  }
+  if (it.summary) { h2('Summary'); String(it.summary).split(/\n{2,}/).forEach((p) => para(p.trim())); }
+  if (it.requirements.length) { h2('What you need'); it.requirements.forEach((r) => bullet(r)); }
+  if (it.terms.length) {
+    h2('Key terms');
+    it.terms.forEach((t) => { need(30); para(t.term, { font: 'b', gap: 0 }); para(t.meaning, { indent: 14, col: [0.2, 0.25, 0.33], gap: 4 }); });
+  }
+  if (it.logic.length) { h2('How it works'); it.logic.forEach((l, i) => bullet(l, `${i + 1}.`)); }
+  if (it.expectedOutput) { h2('Expected output'); code(it.expectedOutput); }
+  if (it.keyPoints.length) { h2('Points to remember'); it.keyPoints.forEach((k) => bullet(k)); }
+  if (it.mistakes.length) { h2('Common mistakes'); it.mistakes.forEach((k) => bullet(k)); }
+  if (it.figures.length) { h2('Diagrams and figures'); it.figures.forEach((f) => { need(30); para(f.title, { font: 'b', gap: 0 }); para(f.description, { indent: 14, gap: 4 }); }); }
+  if (it.steps.length) {
+    h2('Steps');
+    it.steps.forEach((s, i) => {
+      need(40);
+      para(`Step ${i + 1}: ${s.title}`, { font: 'b', size: 11, gap: 1, before: 4 });
+      if (s.detail && s.detail !== s.title) para(s.detail, { indent: 14, col: [0.2, 0.25, 0.33], gap: 2 });
+      if (s.code) code(s.code);
+    });
+  }
+  if (it.viva.length) {
+    h2('Viva questions and model answers');
+    it.viva.forEach((v, i) => {
+      need(54);
+      para(`Q${i + 1}. ${v.q}`, { font: 'b', size: 11, gap: 1, before: 5 });
+      para(v.a, { indent: 14, gap: 2 });
+      if (v.followUp && v.followUp.q) para(`Examiner may ask next: ${v.followUp.q}  ${v.followUp.a}`, { font: 'i', size: 9.5, indent: 14, col: PDF_MUTED, gap: 3 });
+    });
+  }
+  para(it.provider === 'ai' ? 'Written by AI from your lab manual. Check important details against your manual and your lab teacher\'s instructions.' : 'Basic draft made without AI. Check everything against your lab manual.',
+    { font: 'i', size: 9, col: PDF_MUTED, before: 14 });
+
+  /* ----- footers, then the PDF file itself ----- */
+  const total = pages.length;
+  pages.forEach((p, i) => {
+    ops = p;
+    put(`LabPrep AI  ·  ${pdfClip(it.title || 'Experiment', 70)}`, 'r', 8, M, 30, PDF_MUTED);
+    const label = `Page ${i + 1} of ${total}`;
+    put(label, 'r', 8, W - M - pdfWidth(pdfCodes(label), 'r', 8), 30, PDF_MUTED);
+  });
+  const objs = [];
+  objs[1] = '<< /Type /Catalog /Pages 2 0 R >>';
+  objs[2] = `<< /Type /Pages /Kids [${pages.map((_, i) => `${8 + 2 * i} 0 R`).join(' ')}] /Count ${total} >>`;
+  ['Helvetica', 'Helvetica-Bold', 'Helvetica-Oblique', 'Courier'].forEach((f, i) => { objs[3 + i] = `<< /Type /Font /Subtype /Type1 /BaseFont /${f} /Encoding /WinAnsiEncoding >>`; });
+  objs[7] = `<< /Title <${hex(pdfCodes(it.title || 'Experiment').filter((c) => c >= 32 && c <= 126).slice(0, 120))}> /Producer <${hex(pdfCodes('LabPrep AI'))}> >>`;
+  pages.forEach((p, i) => {
+    const stream = p.join('\n');
+    objs[8 + 2 * i] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W} ${H}] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R >> >> /Contents ${9 + 2 * i} 0 R >>`;
+    objs[9 + 2 * i] = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
+  });
+  let out = '%PDF-1.4\n';
+  const offsets = [];
+  for (let n = 1; n < objs.length; n++) { offsets[n] = out.length; out += `${n} 0 obj\n${objs[n]}\nendobj\n`; }
+  const xref = out.length;
+  out += `xref\n0 ${objs.length}\n0000000000 65535 f \n` + offsets.slice(1).map((o) => String(o).padStart(10, '0') + ' 00000 n \n').join('');
+  out += `trailer\n<< /Size ${objs.length} /Root 1 0 R /Info 7 0 R >>\nstartxref\n${xref}\n%%EOF`;
+  const bytes = new Uint8Array(out.length);
+  for (let i = 0; i < out.length; i++) bytes[i] = out.charCodeAt(i) & 255;
+  return new Blob([bytes], { type: 'application/pdf' });
+}
+
+function downloadNotes(it) {
+  try {
+    saveBlob(buildStudyPdf(it, subjectOf(it).name), `${fileBase(it)}-study-notes.pdf`);
+    toast('Study notes PDF downloaded.');
+  } catch (err) { console.error(err); toast('Could not make the PDF. Please try again.'); }
+}
+async function downloadOriginal(it) {
+  const blob = await loadPdf(it.id);
+  if (blob) { saveBlob(blob, /\.pdf$/i.test(it.name || '') ? it.name : `${fileBase(it)}.pdf`); return; }
+  toast('The original PDF is not saved on this device. Choose the file once and it will be kept here.');
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/pdf,.pdf';
+  input.onchange = async () => {
+    const f = input.files && input.files[0];
+    if (!f) return;
+    if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') return toast('That file is not a PDF.');
+    if (f.size > MAX_MB * 1024 * 1024) return toast(`That PDF is larger than ${MAX_MB} MB.`);
+    if (await savePdf(it.id, f)) { saveBlob(f, f.name); toast('Saved on this device and downloaded.'); }
+    else toast('This browser would not keep the file. Use the copy on your computer.');
+  };
+  input.click();
+}
 
 /* ---------- router ---------- */
 function route() {
