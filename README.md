@@ -2,9 +2,9 @@
 
 Upload an experiment PDF from your lab manual and get:
 
-1. **Summary** – the aim, a short plain-language summary, what you need, and points to remember.
+1. **Summary** – the aim, a plain-language summary, key terms, how it works inside, the expected output, points to remember and common mistakes.
 2. **Steps** – an ordered plan to carry out the experiment yourself, with the code or commands for each step and tick boxes to track your progress.
-3. **Viva** – questions asked one at a time. Type (or say) your answer, and it is checked and scored out of 10, with the model answer shown after every question.
+3. **Viva** – 12 questions asked one at a time, easy to hard, each with a hint. Type (or say) your answer; it is marked out of 10 against the model answer and its must-have points, with what you got right, what you missed, a stronger version of your answer, and the follow-up an examiner would ask next.
 
 Experiments are organised by subject you choose. Without a database, everything you create is stored **in your own browser** (nothing is lost when the free server restarts, but experiments do not follow you to another device). With a free Neon database added, people can sign in and their experiments follow them everywhere.
 
@@ -88,6 +88,19 @@ Never paste your key into the code, GitHub, or a chat. If a key has been shared 
 Free-tier terms differ from paid ones, so check Google's terms before uploading anything confidential.
 
 Other providers work too: set `AI_API_KEY`, `AI_BASE_URL` and `AI_MODEL` for any OpenAI-compatible service (OpenAI, Groq, OpenRouter, ...).
+
+### "AI quota or rate limit was reached"
+
+The free Gemini tier gives every model its own small daily and per-minute allowance. The site now copes with this by itself:
+
+- If one model is out of quota it moves on to the next Flash / Flash-Lite model straight away and remembers which ones are resting.
+- Grading viva answers uses Flash-Lite first, so it does not compete with summaries for the same allowance.
+- A summary uses two AI calls at once (summary + steps, and viva). A PDF you already analyzed is answered from a saved copy at no cost for about 6 hours.
+- The PDF itself is only sent to Gemini when it is scanned or its text mentions figures, circuits or diagrams. Text manuals are sent as text, which is much faster.
+- When every model is used up the page says so, shows the basic draft, and a **Try AI again** button appears on the experiment.
+- The daily free allowance resets at midnight Pacific time. If you hit it often, create the key in a Google project with billing turned on (the cost for this site is tiny) or add a second key from another project.
+
+Optional settings: `AI_SPLIT=0` (one AI call instead of two), `AI_CONCURRENCY=4` (how many AI calls run at once), `AI_MODEL` (force a model; the others are still used as backups).
 
 ### Protect your AI quota
 

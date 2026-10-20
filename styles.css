@@ -254,3 +254,23 @@ dialog code{background:#EEF1F5;border-radius:5px;padding:1px 6px;font-family:var
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 @media print{.top,.tabs,.exp-actions,.nextrow,.crumb{display:none}body{background:#fff}.panel{box-shadow:none}}
+
+/* ---- richer summary and viva ---- */
+.ai-pill.busy::before{background:#F59E0B}
+.prose + .prose{margin-top:.8em}
+.terms{display:grid;gap:8px;margin:0;max-width:68ch}
+.terms div{background:var(--accent-soft);border-radius:10px;padding:10px 14px}
+.terms dt{font-weight:700;color:var(--accent-ink)}
+.terms dd{margin:2px 0 0;color:var(--ink-2)}
+.logic{padding-left:1.3em;max-width:68ch;color:var(--ink-2);margin:0}
+.logic li{margin-bottom:.5em;padding-left:.2em}
+.expected{white-space:pre-wrap}
+.mistakes li::marker{color:var(--bad)}
+.hint{margin:0 0 12px;color:var(--ink-2)}
+.hint summary{cursor:pointer;color:var(--accent);font-weight:600;font-size:.92rem}
+.hint p{margin:6px 0 0;background:var(--warn-soft);color:#6B4204;border-radius:10px;padding:10px 14px}
+.strengths{display:flex;gap:6px;flex-wrap:wrap;list-style:none;padding:0;margin:4px 0}
+.strengths li{background:var(--good-soft);color:#14532D;border-radius:6px;padding:2px 9px;font-size:.88rem}
+.followup{margin-top:14px;color:var(--ink-2)}
+.followup summary{cursor:pointer;font-weight:600;color:var(--accent-ink)}
+.followup p{margin-top:8px}

@@ -39,6 +39,7 @@ function normalizeData() {
   items.forEach((it) => {
     it.steps = it.steps || []; it.viva = it.viva || []; it.requirements = it.requirements || []; it.keyPoints = it.keyPoints || [];
     it.codeBlocks = it.codeBlocks || []; it.stepsDone = it.stepsDone || {}; it.scores = it.scores || {}; it.figures = it.figures || [];
+    it.terms = it.terms || []; it.logic = it.logic || []; it.mistakes = it.mistakes || []; it.expectedOutput = it.expectedOutput || '';
   });
 }
 function readCache() {
@@ -132,8 +133,8 @@ async function loadStatus() {
   const pill = $('#aiPill');
   try {
     status = await api('/api/status');
-    pill.className = 'ai-pill ' + (status.ai ? 'on' : '');
-    pill.textContent = status.ai ? 'AI on' : 'AI off';
+    pill.className = 'ai-pill ' + (status.ai ? (status.busy ? 'busy' : 'on') : '');
+    pill.textContent = status.ai ? (status.busy ? 'AI busy' : 'AI on') : 'AI off';
     account.enabled = !!(status.accounts && status.accounts.enabled);
     account.note = (status.accounts && status.accounts.note) || '';
     if (status.accounts && status.accounts.maxExperiments) account.limit = status.accounts.maxExperiments;
@@ -566,9 +567,10 @@ $('#uploadForm').onsubmit = async (e) => {
   showUploadError('');
   setProgress(true, 'Uploading the PDF…');
   const timers = [
-    setTimeout(() => setProgress(true, 'Reading the text from your PDF…'), 2500),
-    setTimeout(() => setProgress(true, 'Writing the summary, steps and viva questions…'), 7000),
-    setTimeout(() => setProgress(true, 'Still working. Long manuals, and a free server that was asleep, take a little longer.'), 25000)
+    setTimeout(() => setProgress(true, 'Reading the text from your PDF…'), 2000),
+    setTimeout(() => setProgress(true, 'Writing the summary, steps and viva questions together…'), 5000),
+    setTimeout(() => setProgress(true, 'Almost there. If the AI is busy, the site switches to another model by itself.'), 20000),
+    setTimeout(() => setProgress(true, 'Still working. Long manuals, and a free server that was asleep, take a little longer.'), 40000)
   ];
   const ctl = new AbortController();
   const abortTimer = setTimeout(() => ctl.abort(), 4 * 60 * 1000);
@@ -581,7 +583,8 @@ $('#uploadForm').onsubmit = async (e) => {
     const item = {
       id: uid(), subjectId: subj.id, createdAt: new Date().toISOString(), size: f.size,
       name: d.name || f.name, title: d.title || f.name, aim: d.aim || '', summary: d.summary || '', requirements: d.requirements || [],
-      keyPoints: d.keyPoints || [], steps: d.steps || [], viva: d.viva || [], figures: d.figures || [], codeBlocks: d.codeBlocks || [], text: d.text || '',
+      keyPoints: d.keyPoints || [], terms: d.terms || [], logic: d.logic || [], mistakes: d.mistakes || [], expectedOutput: d.expectedOutput || '',
+      steps: d.steps || [], viva: d.viva || [], figures: d.figures || [], codeBlocks: d.codeBlocks || [], text: d.text || '',
       pages: d.pages || 0, truncated: !!d.truncated, provider: d.provider || 'offline', note: d.note || '',
       stepsDone: {}, completed: false, scores: {}, bestAvg: null
     };
@@ -643,7 +646,7 @@ $('#list').onclick = (e) => {
   const b = e.target.closest('[data-del]');
   if (!b) return;
   const it = findItem(b.dataset.del);
-  if (it && confirm(`Delete “${it.title}” from this browser?`)) { items = items.filter((x) => x.id !== it.id); saveData(); renderHome(); toast('Experiment deleted.'); }
+  if (it && confirm(`Delete “${it.title}” ${account.user ? 'from your account' : 'from this browser'}?`)) { items = items.filter((x) => x.id !== it.id); saveData(); renderHome(); toast('Experiment deleted.'); }
 };
 
 /* ---------- experiment view ---------- */
@@ -681,7 +684,7 @@ function renderExperiment(id, tab) {
       <label class="subject-pick"><span class="dot" style="background:${esc(sub.color)}"></span><select id="moveSubject" aria-label="Subject">${options}</select></label>
       ${badge}<span>${it.pages ? it.pages + ' page' + (it.pages === 1 ? '' : 's') : ''}</span>
     </div>
-    ${it.note ? `<p class="note">${esc(it.note)}</p>` : ''}
+    ${it.note ? `<p class="note">${esc(it.note)}${it.provider !== 'ai' && status.ai && it.text ? ' <button class="btn primary sm" type="button" data-act="reanalyze">Try AI again</button>' : ''}</p>` : ''}
     ${it.truncated ? '<p class="note">This PDF is very long, so only the first part of it was read.</p>' : ''}
     <div class="tabs" role="tablist">${TABS.map(([k, label]) => `<button class="tab" role="tab" type="button" data-tab="${k}" aria-selected="${k === currentTab}">${label}</button>`).join('')}</div>
     <div id="tabBody"></div>`;
@@ -700,13 +703,20 @@ function renderTab() {
   document.querySelectorAll('#experiment .tab').forEach((t) => t.setAttribute('aria-selected', String(t.dataset.tab === currentTab)));
 }
 
+function paras(text) {
+  return String(text || '').split(/\n{2,}/).map((p) => p.trim()).filter(Boolean).map((p) => `<p class="prose">${esc(p)}</p>`).join('');
+}
 function summaryHtml(it) {
   return `<div class="panel">
     <div class="aim"><small>AIM</small><p>${esc(it.aim || it.title)}</p></div>
     <h2>Summary</h2>
-    <p class="prose">${esc(it.summary)}</p>
+    ${paras(it.summary)}
     ${it.requirements.length ? `<h2>What you need</h2><ul class="pills">${it.requirements.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
+    ${it.terms.length ? `<h2>Key terms</h2><dl class="terms">${it.terms.map((t) => `<div><dt>${esc(t.term)}</dt><dd>${esc(t.meaning)}</dd></div>`).join('')}</dl>` : ''}
+    ${it.logic.length ? `<h2>How it works</h2><ol class="logic">${it.logic.map((l) => `<li>${esc(l)}</li>`).join('')}</ol>` : ''}
+    ${it.expectedOutput ? `<h2>Expected output</h2><pre class="code expected"><code>${esc(it.expectedOutput)}</code></pre>` : ''}
     ${it.keyPoints.length ? `<h2>Points to remember</h2><ul class="points">${it.keyPoints.map((k) => `<li>${esc(k)}</li>`).join('')}</ul>` : ''}
+    ${it.mistakes.length ? `<h2>Common mistakes</h2><ul class="points mistakes">${it.mistakes.map((k) => `<li>${esc(k)}</li>`).join('')}</ul>` : ''}
     ${it.figures.length ? `<h2>Diagrams and figures</h2><div class="figs">${it.figures.map((f) => `<div class="fig"><b>${esc(f.title)}</b><p>${esc(f.description)}</p></div>`).join('')}</div>` : ''}
     <div class="nextrow"><button class="btn primary" type="button" data-tab="steps">Continue to steps</button></div>
   </div>`;
@@ -764,6 +774,10 @@ function vivaIntroHtml(it) {
   </div>`;
 }
 
+function followUpHtml(q) {
+  return q.followUp && q.followUp.q ? `<details class="followup"><summary>The examiner may ask next: ${esc(q.followUp.q)}</summary><p class="model">${esc(q.followUp.a)}</p></details>` : '';
+}
+
 function vivaQuestionHtml(it, s) {
   const idx = s.order[s.pos];
   const q = it.viva[idx];
@@ -779,11 +793,14 @@ function vivaQuestionHtml(it, s) {
       <div class="grade-body">
         ${g.feedback ? `<h4>FEEDBACK</h4><p>${esc(g.feedback)}</p>` : ''}
         ${g.note ? `<p class="muted">${esc(g.note)}</p>` : ''}
+        ${g.strengths && g.strengths.length ? `<h4>YOU GOT RIGHT</h4><ul class="strengths">${g.strengths.map((m) => `<li>${esc(m)}</li>`).join('')}</ul>` : ''}
         ${g.missing && g.missing.length ? `<h4>YOU COULD ADD</h4><ul class="missing">${g.missing.map((m) => `<li>${esc(m)}</li>`).join('')}</ul>` : ''}
-        <h4>MODEL ANSWER</h4><p class="model">${esc(g.improved || q.a)}</p>
+        ${g.improved ? `<h4>A STRONGER VERSION OF YOUR ANSWER</h4><p class="model">${esc(g.improved)}</p>` : ''}
+        <h4>MODEL ANSWER</h4><p class="model">${esc(q.a)}</p>
+        ${followUpHtml(q)}
       </div></div>`;
   } else if (s.phase === 'revealed') {
-    grade = `<div class="grade"><div class="grade-body"><h4>MODEL ANSWER</h4><p class="model">${esc(q.a)}</p></div></div>`;
+    grade = `<div class="grade"><div class="grade-body"><h4>MODEL ANSWER</h4><p class="model">${esc(q.a)}</p>${followUpHtml(q)}</div></div>`;
   }
   const last = s.pos >= total - 1;
   const lock = s.phase === 'checking' ? 'disabled' : '';
@@ -791,6 +808,7 @@ function vivaQuestionHtml(it, s) {
     <div class="vq-top"><span>Question ${s.pos + 1} of ${total}</span><span class="level">${esc(levelLabel[q.level] || 'Concept')}</span></div>
     <div class="vq-bar"><span style="width:${Math.round(((s.pos + (answered ? 1 : 0)) / total) * 100)}%"></span></div>
     <p class="vq">${esc(q.q)}</p>
+    ${q.hint && !answered ? `<details class="hint"><summary>Need a hint?</summary><p>${esc(q.hint)}</p></details>` : ''}
     <textarea id="answer" class="answer-box" aria-label="Your answer" ${answered || s.phase === 'checking' ? 'readonly' : ''} placeholder="Answer the way you would say it to the examiner.">${esc(s.draft)}</textarea>
     <div class="vq-actions">
       ${answered
@@ -886,7 +904,7 @@ async function checkCurrent(it, s) {
   s.phase = 'checking';
   renderTab();
   try {
-    const r = await api('/api/viva/check', { method: 'POST', json: { question: q.q, modelAnswer: q.a, userAnswer: s.draft } });
+    const r = await api('/api/viva/check', { method: 'POST', json: { question: q.q, modelAnswer: q.a, keywords: q.keywords || [], userAnswer: s.draft } });
     s.last = r;
     recordResult(it, s, idx, r.score);
     s.phase = 'graded';
@@ -900,19 +918,21 @@ async function checkCurrent(it, s) {
 
 async function reanalyze(it) {
   if (!it.text) { toast('There is no saved text to analyze.'); return; }
-  if (!confirm('Re-analyze this experiment? The summary, steps and viva questions will be rewritten. Your ticked steps and viva scores are cleared.')) return;
-  toast('Re-analyzing…');
+  const hasProgress = Object.values(it.stepsDone || {}).some(Boolean) || Object.keys(it.scores || {}).length > 0;
+  if ((it.provider === 'ai' || hasProgress) && !confirm('Re-analyze this experiment? The summary, steps and viva questions will be rewritten. Your ticked steps and viva scores are cleared.')) return;
+  toast('Re-analyzing. This takes about 20 to 40 seconds…');
   try {
     const d = await api('/api/reanalyze', { method: 'POST', json: { name: it.name, text: it.text } });
     Object.assign(it, {
       title: d.title || it.title, aim: d.aim || '', summary: d.summary || '', requirements: d.requirements || [], keyPoints: d.keyPoints || [],
+      terms: d.terms || [], logic: d.logic || [], mistakes: d.mistakes || [], expectedOutput: d.expectedOutput || '',
       steps: d.steps || [], viva: d.viva || [], figures: d.figures && d.figures.length ? d.figures : it.figures, codeBlocks: d.codeBlocks || it.codeBlocks, provider: d.provider || 'offline', note: d.note || '',
       stepsDone: {}, scores: {}, bestAvg: null
     });
     delete sessions[it.id];
     saveData();
     if (currentId === it.id) renderExperiment(it.id, currentTab); // do not yank the user back if they already left
-    toast('Re-analyzed.');
+    toast(d.provider === 'ai' ? 'Re-analyzed with AI.' : 'The AI could not be used this time. The basic draft is shown.');
   } catch (err) { toast(err.message); }
 }
 
@@ -966,7 +986,7 @@ $('#experiment').addEventListener('click', (e) => {
   const a = act.dataset.act;
   const s = sessions[it.id];
   if (a === 'complete') { it.completed = !it.completed; saveData(); renderExperiment(it.id, currentTab); }
-  else if (a === 'delete') { if (confirm(`Delete “${it.title}” from this browser?`)) { items = items.filter((x) => x.id !== it.id); delete sessions[it.id]; saveData(); location.hash = '#/'; toast('Experiment deleted.'); } }
+  else if (a === 'delete') { if (confirm(`Delete “${it.title}” ${account.user ? 'from your account' : 'from this browser'}?`)) { items = items.filter((x) => x.id !== it.id); delete sessions[it.id]; saveData(); location.hash = '#/'; toast('Experiment deleted.'); } }
   else if (a === 'reanalyze') reanalyze(it);
   else if (a === 'resetsteps') { it.stepsDone = {}; saveData(); renderTab(); }
   else if (a === 'vivastart') { const sh = $('#shuffle'); newSession(it, sh && !sh.checked ? it.viva.map((_, i) => i) : shuffled(it.viva.length)); renderTab(); }
