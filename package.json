@@ -1,6 +1,6 @@
 {
   "name": "labprep-ai",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "private": true,
   "description": "LabPrep AI: upload an experiment PDF, get a summary, step-by-step implementation steps and viva practice",
   "main": "server.js",

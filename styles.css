@@ -277,3 +277,16 @@ dialog code{background:#EEF1F5;border-radius:5px;padding:1px 6px;font-family:var
 
 /* ---- downloads ---- */
 .dlrow{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 18px}
+
+/* ---- AI still writing ---- */
+.pending{display:flex;gap:12px;align-items:center;background:var(--accent-soft);color:var(--accent-ink);border-radius:12px;padding:11px 14px;margin:0 0 16px}
+.pending b{display:block;font-weight:700}
+.pending span:not(.spin){font-size:.9rem}
+.spin{width:18px;height:18px;border-radius:50%;border:3px solid rgba(15,118,110,.25);border-top-color:var(--accent);animation:lpspin .8s linear infinite;flex:none}
+@keyframes lpspin{to{transform:rotate(360deg)}}
+.skel{padding:22px}
+.skel-label{margin:0 0 14px;font-weight:600;color:var(--ink-2)}
+.skel i{display:block;height:13px;border-radius:7px;margin-bottom:11px;background:linear-gradient(90deg,#eceff3 25%,#f7f8fa 45%,#eceff3 65%);background-size:300% 100%;animation:lpshim 1.4s ease-in-out infinite}
+.skel i.s{width:62%}
+@keyframes lpshim{from{background-position:100% 0}to{background-position:0 0}}
+@media (prefers-reduced-motion:reduce){.spin,.skel i{animation:none}}

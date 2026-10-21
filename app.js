@@ -40,6 +40,10 @@ function normalizeData() {
     it.steps = it.steps || []; it.viva = it.viva || []; it.requirements = it.requirements || []; it.keyPoints = it.keyPoints || [];
     it.codeBlocks = it.codeBlocks || []; it.stepsDone = it.stepsDone || {}; it.scores = it.scores || {}; it.figures = it.figures || [];
     it.terms = it.terms || []; it.logic = it.logic || []; it.mistakes = it.mistakes || []; it.expectedOutput = it.expectedOutput || '';
+    if (it.pending) { // the page was closed while the AI was still writing
+      it.pending = null; it.partial = true;
+      it.note = 'The AI was still writing when this page was closed, so some parts may be a basic draft. Use “Try AI again” to rewrite it.';
+    }
   });
 }
 function readCache() {
@@ -96,7 +100,21 @@ function askCode() {
     dlg.showModal();
   });
 }
-async function api(url, { method = 'GET', json, form, signal } = {}, retried = false) {
+async function readNdjson(res, onEvent) {
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  const handle = (line) => { line = line.trim(); if (!line) return; let ev; try { ev = JSON.parse(line); } catch { return; } onEvent(ev); };
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); handle(line); }
+  }
+  handle(buf + dec.decode());
+}
+async function api(url, { method = 'GET', json, form, signal, onEvent } = {}, retried = false) {
   const headers = { 'x-labprep': '1' };
   let code = '';
   try { code = localStorage.getItem(CODE_KEY) || ''; } catch {}
@@ -110,6 +128,7 @@ async function api(url, { method = 'GET', json, form, signal } = {}, retried = f
     if (err && err.name === 'AbortError') throw new Error('This is taking too long. Please try again.');
     throw new Error('Could not reach the server. Check your internet connection. If the site was idle, wait a minute for it to wake up and try again.');
   }
+  if (onEvent && res.ok && /ndjson/i.test(res.headers.get('content-type') || '')) { await readNdjson(res, onEvent); return { streamed: true }; }
   let data = {};
   try { data = await res.json(); } catch {}
   if (res.status === 401 && data.code === 'login' && account.enabled) {
@@ -121,7 +140,7 @@ async function api(url, { method = 'GET', json, form, signal } = {}, retried = f
     const entered = await askCode();
     if (entered) {
       try { localStorage.setItem(CODE_KEY, entered); } catch {}
-      return api(url, { method, json, form, signal }, true);
+      return api(url, { method, json, form, signal, onEvent }, true);
     }
   }
   if (!res.ok) { const e = new Error(data.error || `The server returned an error (${res.status}).`); e.status = res.status; throw e; }
@@ -552,6 +571,49 @@ function setProgress(on, text) {
   if (text) $('#progressText').textContent = text;
 }
 
+// Builds a saved experiment from the server's result (or from its instant draft while the AI is still writing).
+function makeItem(d, f, typed, pending) {
+  const subj = subjectByName(typed || DEFAULT_SUBJECT, true);
+  rememberSubject(subj.name);
+  return {
+    id: uid(), subjectId: subj.id, createdAt: new Date().toISOString(), size: f.size,
+    name: d.name || f.name, title: d.title || f.name, aim: d.aim || '', summary: d.summary || '', requirements: d.requirements || [],
+    keyPoints: d.keyPoints || [], terms: d.terms || [], logic: d.logic || [], mistakes: d.mistakes || [], expectedOutput: d.expectedOutput || '',
+    steps: d.steps || [], viva: d.viva || [], figures: d.figures || [], codeBlocks: d.codeBlocks || [], text: d.text || '',
+    pages: d.pages || 0, truncated: !!d.truncated, provider: d.provider || 'offline', partial: !!d.partial, note: d.note || '',
+    pending: pending && pending.length ? Object.fromEntries(pending.map((k) => [k, true])) : null,
+    stepsDone: {}, completed: false, scores: {}, bestAvg: null
+  };
+}
+// The AI's parts arrive one by one (summary first); each replaces the matching part of the experiment.
+function applyPart(it, part, d) {
+  if (part === 'summary') {
+    if (d.title) it.title = d.title;
+    Object.assign(it, { aim: d.aim || it.aim, summary: d.summary || it.summary, terms: d.terms || [], requirements: d.requirements || [],
+      keyPoints: d.keyPoints && d.keyPoints.length ? d.keyPoints : it.keyPoints, logic: d.logic || [], expectedOutput: d.expectedOutput || it.expectedOutput || '',
+      mistakes: d.mistakes || [], figures: d.figures || [] });
+  } else if (part === 'steps') {
+    it.steps = d.steps || it.steps; it.stepsDone = {};
+  } else if (part === 'viva') {
+    it.viva = d.viva || it.viva; it.scores = {}; it.bestAvg = null;
+  }
+  if (it.pending) { delete it.pending[part]; }
+  saveData();
+  refreshPending(it);
+}
+function finishItem(it, r) {
+  it.provider = r.provider || it.provider;
+  it.partial = !!r.partial;
+  it.note = r.note || '';
+  if (r.codeBlocks && r.codeBlocks.length) it.codeBlocks = r.codeBlocks;
+  if (!it.pending || it.pending.summary) { // the summary never arrived as a part: take the final text
+    Object.assign(it, { title: r.title || it.title, aim: r.aim || it.aim, summary: r.summary || it.summary });
+  }
+  it.pending = null;
+  saveData();
+  refreshPending(it);
+}
+
 $('#uploadForm').onsubmit = async (e) => {
   e.preventDefault();
   if (busy) return;
@@ -569,42 +631,56 @@ $('#uploadForm').onsubmit = async (e) => {
   setProgress(true, 'Uploading the PDF…');
   const timers = [
     setTimeout(() => setProgress(true, 'Reading the text from your PDF…'), 2000),
-    setTimeout(() => setProgress(true, 'Writing the summary, steps and viva questions together…'), 5000),
-    setTimeout(() => setProgress(true, 'Almost there. If the AI is busy, the site switches to another model by itself.'), 20000),
-    setTimeout(() => setProgress(true, 'Still working. Long manuals, and a free server that was asleep, take a little longer.'), 40000)
+    setTimeout(() => setProgress(true, 'Still working. A free server that was asleep takes up to a minute to wake.'), 12000)
   ];
   const ctl = new AbortController();
   const abortTimer = setTimeout(() => ctl.abort(), 4 * 60 * 1000);
-  try {
-    const form = new FormData();
-    form.append('pdf', f, f.name);
-    const d = await api('/api/analyze', { method: 'POST', form, signal: ctl.signal });
-    const subj = subjectByName(typed || DEFAULT_SUBJECT, true);
-    rememberSubject(subj.name);
-    const item = {
-      id: uid(), subjectId: subj.id, createdAt: new Date().toISOString(), size: f.size,
-      name: d.name || f.name, title: d.title || f.name, aim: d.aim || '', summary: d.summary || '', requirements: d.requirements || [],
-      keyPoints: d.keyPoints || [], terms: d.terms || [], logic: d.logic || [], mistakes: d.mistakes || [], expectedOutput: d.expectedOutput || '',
-      steps: d.steps || [], viva: d.viva || [], figures: d.figures || [], codeBlocks: d.codeBlocks || [], text: d.text || '',
-      pages: d.pages || 0, truncated: !!d.truncated, provider: d.provider || 'offline', note: d.note || '',
-      stepsDone: {}, completed: false, scores: {}, bestAvg: null
-    };
-    if (account.user && JSON.stringify(item).length > 690 * 1024) throw new Error('This PDF is too long to save to your account. Split it into smaller parts and upload them separately.');
-    items.unshift(item);
-    saveData();
-    await savePdf(item.id, f); // keep the original so it can be downloaded again
-    $('#pdfInput').value = '';
-    setFile(null);
-    location.hash = `#/exp/${item.id}/summary`;
-    toast('Done. Download the study notes or your original PDF from the buttons at the top.');
-  } catch (err) {
-    showUploadError(err.message);
-  } finally {
+  const endUi = () => {
     timers.forEach(clearTimeout);
     clearTimeout(abortTimer);
     setProgress(false);
     busy = false;
     $('#analyzeBtn').disabled = false;
+  };
+  let item = null;
+  try {
+    const form = new FormData();
+    form.append('pdf', f, f.name);
+    const d = await api('/api/analyze', { method: 'POST', form, signal: ctl.signal, onEvent: (ev) => {
+      if (ev.type === 'start') {
+        item = makeItem({ ...ev.draft, text: ev.text, pages: ev.pages, truncated: ev.truncated, name: ev.name }, f, typed, ev.pending);
+        if (account.user && JSON.stringify(item).length > 690 * 1024) { item = null; throw new Error('This PDF is too long to save to your account. Split it into smaller parts and upload them separately.'); }
+        items.unshift(item);
+        saveData();
+        savePdf(item.id, f); // keep the original so it can be downloaded again
+        $('#pdfInput').value = '';
+        setFile(null);
+        endUi(); // the experiment opens now; the AI's parts fill in as they arrive
+        location.hash = `#/exp/${item.id}/summary`;
+      } else if (ev.type === 'part' && item) applyPart(item, ev.part, ev.data);
+      else if (ev.type === 'done' && item) { finishItem(item, ev.result); toast(item.provider === 'ai' && !item.partial ? 'Ready. Download the study notes or your original PDF from the buttons at the top.' : 'Done, with a note at the top.'); }
+      else if (ev.type === 'error') throw new Error(ev.error || 'The analysis failed.');
+    } });
+    if (!d.streamed) { // scanned PDFs come back in one piece
+      item = makeItem(d, f, typed, null);
+      if (account.user && JSON.stringify(item).length > 690 * 1024) throw new Error('This PDF is too long to save to your account. Split it into smaller parts and upload them separately.');
+      items.unshift(item);
+      saveData();
+      await savePdf(item.id, f);
+      $('#pdfInput').value = '';
+      setFile(null);
+      location.hash = `#/exp/${item.id}/summary`;
+      toast('Done. Download the study notes or your original PDF from the buttons at the top.');
+    }
+  } catch (err) {
+    if (item && item.pending) { // the connection dropped part-way: keep what arrived
+      item.pending = null; item.partial = true;
+      const why = err && (err.name === 'TypeError' || /network|fetch|abort/i.test(err.message || '')) ? 'The connection dropped while the AI was writing.' : err.message;
+      item.note = `${why} Some parts may be a basic draft. Use “Try AI again” to rewrite it.`;
+      saveData(); refreshPending(item);
+    } else showUploadError(err.message);
+  } finally {
+    endUi();
   }
 };
 
@@ -670,7 +746,7 @@ function renderExperiment(id, tab) {
   const root = $('#experiment');
   root.hidden = false;
   const sub = subjectOf(it);
-  const badge = it.provider === 'ai' ? '<span class="badge ai">Written by AI</span>' : '<span class="badge basic">Basic draft, no AI</span>';
+  const badge = badgeHtml(it);
   const options = subjects.map((s) => `<option value="${esc(s.id)}" ${s.id === it.subjectId ? 'selected' : ''}>${esc(s.name)}</option>`).join('') + '<option value="__new">+ New subject…</option>';
   root.innerHTML = `
     <a class="crumb" href="#/">&larr; All experiments</a>
@@ -688,14 +764,42 @@ function renderExperiment(id, tab) {
     </div>
     <div class="meta-row">
       <label class="subject-pick"><span class="dot" style="background:${esc(sub.color)}"></span><select id="moveSubject" aria-label="Subject">${options}</select></label>
-      ${badge}<span>${it.pages ? it.pages + ' page' + (it.pages === 1 ? '' : 's') : ''}</span>
+      <span id="badgeBox">${badge}</span><span>${it.pages ? it.pages + ' page' + (it.pages === 1 ? '' : 's') : ''}</span>
     </div>
-    ${it.note ? `<p class="note">${esc(it.note)}${it.provider !== 'ai' && status.ai && it.text ? ' <button class="btn primary sm" type="button" data-act="reanalyze">Try AI again</button>' : ''}</p>` : ''}
+    <div id="pendingBar">${pendingHtml(it)}</div>
+    <div id="noteBox">${noteHtml(it)}</div>
     ${it.truncated ? '<p class="note">This PDF is very long, so only the first part of it was read.</p>' : ''}
     <div class="tabs" role="tablist">${TABS.map(([k, label]) => `<button class="tab" role="tab" type="button" data-tab="${k}" aria-selected="${k === currentTab}">${label}</button>`).join('')}</div>
     <div id="tabBody"></div>`;
   renderTab();
   window.scrollTo({ top: 0 });
+}
+
+function pendingHtml(it) {
+  if (!it.pending) return '';
+  const mark = (k) => (it.pending[k] ? '…' : '✓');
+  return `<div class="pending" role="status"><span class="spin" aria-hidden="true"></span><div><b>The AI is writing your notes</b><span>Summary ${mark('summary')} · Steps ${mark('steps')} · Viva ${mark('viva')}</span></div></div>`;
+}
+function badgeHtml(it) {
+  if (it.pending) return '<span class="badge basic">AI is writing…</span>';
+  return it.provider === 'ai' ? '<span class="badge ai">Written by AI</span>' : '<span class="badge basic">Basic draft, no AI</span>';
+}
+function noteHtml(it) {
+  if (!it.note || it.pending) return '';
+  const retry = (it.provider !== 'ai' || it.partial) && status.ai && it.text && !it.pending;
+  return `<p class="note">${esc(it.note)}${retry ? ' <button class="btn primary sm" type="button" data-act="reanalyze">Try AI again</button>' : ''}</p>`;
+}
+function skeleton(label) {
+  return `<div class="panel skel" role="status"><p class="skel-label">${esc(label)}</p><i></i><i></i><i class="s"></i><i></i><i class="s"></i></div>`;
+}
+// Updates the open experiment in place (no jump to the top) when the AI finishes a part.
+function refreshPending(it) {
+  if (currentId !== it.id || $('#experiment').hidden) return;
+  const bar = $('#pendingBar'), note = $('#noteBox'), badge = $('#badgeBox');
+  if (bar) bar.innerHTML = pendingHtml(it);
+  if (note) note.innerHTML = noteHtml(it);
+  if (badge) badge.innerHTML = badgeHtml(it);
+  if (!(sessions[it.id] && currentTab === 'viva')) renderTab();
 }
 
 function renderTab() {
@@ -713,9 +817,10 @@ function paras(text) {
   return String(text || '').split(/\n{2,}/).map((p) => p.trim()).filter(Boolean).map((p) => `<p class="prose">${esc(p)}</p>`).join('');
 }
 function summaryHtml(it) {
+  if (it.pending && it.pending.summary) return skeleton('Writing the summary…');
   return `<div class="panel">
     <div class="aim"><small>AIM</small><p>${esc(it.aim || it.title)}</p></div>
-    <div class="dlrow"><button class="btn primary sm" type="button" data-act="dlnotes">Download study notes (PDF)</button><button class="btn outline sm" type="button" data-act="dlorig">Download original PDF</button></div>
+    ${it.pending ? '' : `<div class="dlrow"><button class="btn primary sm" type="button" data-act="dlnotes">Download study notes (PDF)</button><button class="btn outline sm" type="button" data-act="dlorig">Download original PDF</button></div>`}
     <h2>Summary</h2>
     ${paras(it.summary)}
     ${it.requirements.length ? `<h2>What you need</h2><ul class="pills">${it.requirements.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
@@ -730,6 +835,7 @@ function summaryHtml(it) {
 }
 
 function stepsHtml(it) {
+  if (it.pending && it.pending.steps) return skeleton('Writing the steps…');
   const done = it.steps.filter((_, i) => it.stepsDone[i]).length;
   const pct = it.steps.length ? Math.round((done / it.steps.length) * 100) : 0;
   if (!it.steps.length) return '<div class="panel"><p>No steps were found for this experiment. Try Re-analyze from the More menu.</p></div>';
@@ -757,6 +863,7 @@ function sourceHtml(it) {
 const levelLabel = { basic: 'Basic', concept: 'Concept', applied: 'Applied' };
 
 function vivaHtml(it) {
+  if (it.pending && it.pending.viva) return skeleton('Writing the viva questions and model answers…');
   if (!it.viva.length) return '<div class="panel"><p>No viva questions were generated for this experiment. Try Re-analyze from the More menu.</p></div>';
   const s = sessions[it.id];
   if (!s) return vivaIntroHtml(it);
@@ -933,7 +1040,7 @@ async function reanalyze(it) {
     Object.assign(it, {
       title: d.title || it.title, aim: d.aim || '', summary: d.summary || '', requirements: d.requirements || [], keyPoints: d.keyPoints || [],
       terms: d.terms || [], logic: d.logic || [], mistakes: d.mistakes || [], expectedOutput: d.expectedOutput || '',
-      steps: d.steps || [], viva: d.viva || [], figures: d.figures && d.figures.length ? d.figures : it.figures, codeBlocks: d.codeBlocks || it.codeBlocks, provider: d.provider || 'offline', note: d.note || '',
+      steps: d.steps || [], viva: d.viva || [], figures: d.figures && d.figures.length ? d.figures : it.figures, codeBlocks: d.codeBlocks || it.codeBlocks, provider: d.provider || 'offline', partial: !!d.partial, note: d.note || '',
       stepsDone: {}, scores: {}, bestAvg: null
     });
     delete sessions[it.id];
@@ -1271,6 +1378,7 @@ function buildStudyPdf(it, subjectName) {
 }
 
 function downloadNotes(it) {
+  if (it.pending) { toast('The AI is still writing. Download the notes when all three parts have a tick.'); return; }
   try {
     saveBlob(buildStudyPdf(it, subjectOf(it).name), `${fileBase(it)}-study-notes.pdf`);
     toast('Study notes PDF downloaded.');
